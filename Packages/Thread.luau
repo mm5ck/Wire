@@ -36,7 +36,7 @@ export type RegisterResult = {
 -- State
 --------------------------------------------------
 
-Thread.Version = "2.1.0"
+Thread.Version = "1.0.0"
 Thread.Debug = false
 Thread.HaltOnCriticalFailure = false -- if true, a critical service failure hard-errors instead of just rejecting the start Promise
 
