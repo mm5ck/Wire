@@ -416,44 +416,162 @@ tr:last-child td {
 	text-align: right;
 }
 
+.sidebar-backdrop {
+	display: none;
+}
+
 /* ---------- Responsive ---------- */
 
 @media (max-width: 860px) {
+	.layout {
+		display: block;
+	}
+
 	.sidebar {
 		position: fixed;
-		z-index: 20;
+		z-index: 30;
 		left: 0;
 		top: 0;
+		width: min(300px, 85vw);
+		max-width: 85vw;
 		transform: translateX(-100%);
-		transition: transform 0.18s ease;
-		box-shadow: 4px 0 16px rgba(0, 0, 0, 0.2);
+		transition: transform 0.2s ease;
+		box-shadow: 4px 0 20px rgba(0, 0, 0, 0.25);
 	}
 
 	.sidebar.open {
 		transform: translateX(0);
 	}
 
+	.sidebar-backdrop {
+		display: block;
+		position: fixed;
+		inset: 0;
+		background: rgba(10, 10, 14, 0.5);
+		z-index: 25;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.2s ease;
+	}
+
+	.sidebar-backdrop.open {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.nav-group a {
+		padding: 10px 10px;
+		font-size: 0.95rem;
+	}
+
 	.menu-toggle {
-		display: inline-flex;
+		display: flex;
 		align-items: center;
 		gap: 8px;
 		position: sticky;
 		top: 0;
 		z-index: 10;
 		background: var(--bg);
+		border: none;
 		border-bottom: 1px solid var(--border);
 		width: 100%;
-		padding: 14px 16px;
+		padding: 16px 20px;
+		font: inherit;
 		font-weight: 700;
+		font-size: 1rem;
+		text-align: left;
 		cursor: pointer;
 		color: var(--text);
+		-webkit-tap-highlight-color: transparent;
 	}
 
 	main {
-		padding: 0 20px 80px;
+		padding: 0 20px 64px;
 	}
 
 	.content {
 		padding-top: 24px;
+	}
+
+	h1 {
+		font-size: 1.7rem;
+	}
+
+	.lede {
+		font-size: 1rem;
+	}
+
+	h2 {
+		font-size: 1.28rem;
+		margin: 36px 0 12px;
+	}
+
+	h3 {
+		font-size: 1.05rem;
+	}
+
+	pre {
+		padding: 14px;
+		font-size: 0.8rem;
+		border-radius: 8px;
+	}
+
+	.table-wrap table {
+		font-size: 0.82rem;
+	}
+
+	th, td {
+		padding: 8px 10px;
+	}
+
+	.card-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.page-nav {
+		flex-direction: column;
+	}
+
+	.page-nav .next {
+		text-align: left;
+	}
+}
+
+@media (max-width: 480px) {
+	main {
+		padding: 0 14px 56px;
+	}
+
+	h1 {
+		font-size: 1.45rem;
+	}
+
+	.badges {
+		gap: 6px;
+	}
+
+	.badge {
+		font-size: 0.7rem;
+		padding: 3px 8px;
+	}
+
+	pre {
+		font-size: 0.76rem;
+		padding: 12px;
+	}
+
+	.callout, .card {
+		padding: 14px 16px;
+	}
+}
+
+/* Respect users who've asked for less motion */
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+
+	.sidebar, .sidebar-backdrop {
+		transition: none;
 	}
 }
