@@ -1,8 +1,8 @@
 # Changelog
 
-## 2.1.0
+## 1.0.0
 
-Closes out the remaining gaps versus Knit that 2.0.0 left open, and adds hand-written equivalents of the most-used [RbxUtil](https://github.com/Sleitnick/RbxUtil) modules (the same utility collection Knit itself is built on) as new, independent Util modules. Still zero external dependencies — every module below was written from scratch for this project; nothing is vendored or pulled in via Wally.
+Closes out the remaining gaps versus Knit that the beta left open, and adds hand-written equivalents of the most-used [RbxUtil](https://github.com/Sleitnick/RbxUtil) modules (the same utility collection Knit itself is built on) as new, independent Util modules. Still zero external dependencies — every module below was written from scratch for this project; nothing is vendored or pulled in via Wally.
 
 ### Added — closing the Knit gap
 - **Per-player Property overrides**: `Property:SetFor(player, value)`, `Property:GetFor(player)`, `Property:ClearFor(player)` — the last remaining feature Knit's `RemoteProperty` had that Thread's `Property` didn't. `Property:Set(value)` now also correctly skips broadcasting over an active per-player override.
