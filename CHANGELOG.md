@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.1
 
 ### Fixed
 - **Middleware now actually applies to Signals and Properties, not just Methods.** `Channel.WrapService` previously only ran `Inbound`/`Outbound` middleware for `Client` methods — a service's `Middleware` field silently had no effect on Signals or Properties, despite the docs implying otherwise. Fixed: `Signal:Connect` now runs `Inbound` middleware on client→server fires; `Signal:Fire`/`:FireAll`/`:FireExcept` and `Property:Set`/`:SetFor` now run `Outbound` middleware before sending. `FireAll`/`FireExcept`/`Property:Set` call middleware with `player = nil` since there's no single target. Covered by two new tests in `Tests/Thread.spec.luau`.
