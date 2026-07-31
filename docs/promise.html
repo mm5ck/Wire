@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Promise — Thread</title>
+<meta name="description" content="Complete reference for Thread's self-contained Promise implementation.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html">Home</a>
+		<a href="installation.html">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html">Configuration &amp; Low-Level API</a>
+		<a href="promise.html" class="active">Promise</a>
+		<a href="utilities.html">Util Modules</a>
+		<a href="reference.html">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="eyebrow">Reference</div>
+	<h1>Promise</h1>
+	<p class="lede">
+		<code>Promise.luau</code> is a small, self-contained A+-ish implementation. It exists
+		mainly so <code>Thread.Start()</code>/<code>Thread.OnStart()</code> have something to
+		return, but it's a fully general-purpose async primitive you can use anywhere.
+	</p>
+
+	<h2>Instance methods</h2>
+	<p>Called on a promise you already have.</p>
+	<div class="table-wrap">
+	<table>
+		<tr><th>Method</th><th>Description</th></tr>
+		<tr><td><code>promise:andThen(onResolve?, onReject?)</code></td><td>Standard chaining. Returns a new promise.</td></tr>
+		<tr><td><code>promise:catch(onReject)</code></td><td>Shorthand for <code>:andThen(nil, onReject)</code>.</td></tr>
+		<tr><td><code>promise:finally(callback)</code></td><td>Runs <code>callback()</code> regardless of outcome, then passes the original result/error through.</td></tr>
+		<tr><td><code>promise:timeout(seconds, err?)</code></td><td>Rejects if <code>promise</code> hasn't settled within <code>seconds</code>. Doesn't cancel the underlying work, just stops waiting for it.</td></tr>
+		<tr><td><code>promise:await()</code></td><td>Yields the current thread until settled; returns the value or <code>error()</code>s with the rejection reason.</td></tr>
+		<tr><td><code>promise:getState()</code></td><td>Returns <code>"Pending"</code>, <code>"Resolved"</code>, or <code>"Rejected"</code>.</td></tr>
+	</table>
+	</div>
+
+	<h2>Static constructors</h2>
+	<div class="table-wrap">
+	<table>
+		<tr><th>Function</th><th>When to use it</th></tr>
+		<tr><td><code>Promise.new(function(resolve, reject) ... end)</code></td><td>Wrap any async operation manually.</td></tr>
+		<tr><td><code>Promise.resolve(value)</code> / <code>Promise.reject(err)</code></td><td>Build an already-settled promise.</td></tr>
+		<tr><td><code>Promise.all({...})</code></td><td>Every promise must succeed; one failure rejects the whole batch immediately.</td></tr>
+		<tr><td><code>Promise.allSettled({...})</code></td><td>Run several things, never reject — get a per-entry <code>{Status, Value}</code>/<code>{Status, Error}</code> report.</td></tr>
+		<tr><td><code>Promise.race({...})</code></td><td>Settles with whichever promise finishes first (success or failure).</td></tr>
+		<tr><td><code>Promise.some({...}, count)</code></td><td>Resolves once <code>count</code> of the promises have resolved; rejects if that becomes mathematically impossible.</td></tr>
+		<tr><td><code>Promise.delay(seconds)</code></td><td>Resolves with no value after <code>seconds</code> — useful purely for chaining.</td></tr>
+		<tr><td><code>Promise.retry(fn, attempts)</code></td><td>Calls <code>fn()</code> (must return a promise) up to <code>attempts</code> times, stopping at the first success.</td></tr>
+		<tr><td><code>Promise.fromEvent(signal, predicate?)</code></td><td>Wraps any RBXScriptSignal (or a <code>Thread.Signal</code>) into a one-shot promise that resolves the next time it fires.</td></tr>
+		<tr><td><code>Promise.is(value)</code></td><td><code>true</code> if <code>value</code> is a Promise instance.</td></tr>
+	</table>
+	</div>
+
+	<h2>Common patterns</h2>
+	<pre><code><span class="tok-comment">-- Retry a flaky DataStore call:</span>
+Promise.retry(<span class="tok-keyword">function</span>()
+    <span class="tok-keyword">return</span> Promise.new(<span class="tok-keyword">function</span>(resolve, reject)
+        <span class="tok-keyword">local</span> ok, result = <span class="tok-func">pcall</span>(dataStore.GetAsync, dataStore, <span class="tok-string">"key"</span>)
+        <span class="tok-keyword">if</span> ok <span class="tok-keyword">then</span> resolve(result) <span class="tok-keyword">else</span> reject(result) <span class="tok-keyword">end</span>
+    <span class="tok-keyword">end</span>)
+<span class="tok-keyword">end</span>, <span class="tok-string">5</span>):andThen(<span class="tok-func">print</span>):catch(<span class="tok-func">warn</span>)
+
+<span class="tok-comment">-- Don't let a slow operation hang forever:</span>
+someSlowPromise:timeout(<span class="tok-string">5</span>):catch(<span class="tok-func">warn</span>)
+
+<span class="tok-comment">-- Wait for the next CharacterAdded, as a promise instead of a callback:</span>
+Promise.fromEvent(player.CharacterAdded):andThen(<span class="tok-keyword">function</span>(character)
+    <span class="tok-func">print</span>(character.Name, <span class="tok-string">"spawned"</span>)
+<span class="tok-keyword">end</span>)
+
+<span class="tok-comment">-- First to settle wins:</span>
+Promise.race({ promiseA, promiseB }):andThen(<span class="tok-func">print</span>)
+
+<span class="tok-comment">-- Resolve once N of many resolve:</span>
+Promise.some({ p1, p2, p3 }, <span class="tok-string">2</span>):andThen(<span class="tok-func">print</span>)</code></pre>
+
+	<div class="page-nav">
+		<a href="configuration.html">
+			<span class="dir">Previous</span>
+			← Configuration &amp; Low-Level API
+		</a>
+		<a class="next" href="utilities.html">
+			<span class="dir">Next</span>
+			Util Modules →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

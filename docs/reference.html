@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cheat Sheet, Types & API Tables — Thread</title>
+<meta name="description" content="Server vs. client cheat sheet, exported Luau types, testing, troubleshooting, and the full API reference tables.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html">Home</a>
+		<a href="installation.html">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html">Configuration &amp; Low-Level API</a>
+		<a href="promise.html">Promise</a>
+		<a href="utilities.html">Util Modules</a>
+		<a href="reference.html" class="active">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="eyebrow">Reference</div>
+	<h1>Cheat Sheet, Types &amp; API Tables</h1>
+	<p class="lede">
+		The quick-lookup page: server/client differences, exported types, testing, common
+		errors, and every function in one place.
+	</p>
+
+	<h2 id="cheatsheet">Server vs. Client Cheat Sheet</h2>
+	<p>
+		The single most important thing to internalize: <strong>the server and every client
+		each run their own separate instance of Thread's internal state</strong>
+		(<code>Thread._Register</code>, its own start <code>Promise</code>, etc.) — they are
+		different Lua VMs entirely. Nothing about a service you create on the server is
+		automatically visible to <code>Thread.GetService</code> on the client, or vice versa.
+		<code>Channel</code> is the only bridge between the two.
+	</p>
+
+	<div class="table-wrap">
+	<table>
+		<tr><th>I want to...</th><th>On the server</th><th>On the client</th></tr>
+		<tr><td>Define a service/controller</td><td><code>Thread.CreateService({...})</code></td><td><code>Thread.CreateService({...})</code> (same call, informally called a "controller")</td></tr>
+		<tr><td>Expose something to clients</td><td>Give the service a <code>Client = {...}</code> table</td><td>— (nothing to expose from one client to others)</td></tr>
+		<tr><td>Get one of MY OWN registered services</td><td><code>Thread.GetService("X")</code></td><td><code>Thread.GetService("X")</code></td></tr>
+		<tr><td>Get a <strong>server</strong> service's Client API</td><td>— (already has direct access)</td><td><code>Channel.BuildClient("X")</code> — never <code>Thread.GetService</code></td></tr>
+		<tr><td>Fire a signal</td><td><code>self.Client.MySignal:Fire(player, ...)</code> / <code>:FireAll(...)</code> / <code>:FireExcept(p, ...)</code></td><td><code>proxy.MySignal:Fire(...)</code> (server inferred)</td></tr>
+		<tr><td>Read/set a property</td><td><code>:Get()</code> / <code>:Set(v)</code> / <code>:SetFor(p, v)</code> / <code>:GetFor(p)</code> / <code>:ClearFor(p)</code></td><td><code>:Get()</code> / <code>:Observe(fn)</code> only</td></tr>
+	</table>
+	</div>
+
+	<div class="callout warn">
+		<div class="callout-title">A common mistake</div>
+		<pre style="margin:10px 0 0;"><code>[Thread] No service named 'ArrestService' is registered</code></pre>
+		<p style="margin:10px 0 0;">
+			This means you called <code>Thread.GetService("ArrestService")</code> on the
+			client, but <code>ArrestService</code> was only ever created on the server. Use
+			<code>Channel.BuildClient("ArrestService")</code> instead.
+		</p>
+	</div>
+
+	<h2 id="types">Exported Luau Types</h2>
+	<p>
+		Every module is written under <code>--!strict</code> and exports its own types, so if
+		your own code also uses <code>--!strict</code> (or just wants editor autocomplete),
+		you can reference them directly off the required module:
+	</p>
+	<pre><code><span class="tok-keyword">local</span> Thread = <span class="tok-func">require</span>(<span class="tok-func">game</span>:GetService(<span class="tok-string">"ReplicatedStorage"</span>).Packages.Thread)
+
+<span class="tok-keyword">local</span> def: Thread.ServiceDef = {
+    Name = <span class="tok-string">"MoneyService"</span>,
+    Client = { ... },
+}
+
+<span class="tok-keyword">local</span> MoneyService = Thread.CreateService(def)</code></pre>
+
+	<div class="table-wrap">
+	<table>
+		<tr><th>Type</th><th>From</th><th>Shape</th></tr>
+		<tr><td><code>Thread.ServiceDef</code> / <code>Thread.Service</code></td><td>Thread</td><td><code>Name</code>, <code>Client?</code>, <code>Dependencies?</code>, <code>Middleware?</code>, <code>Critical?</code>, <code>RateLimit?</code>, <code>InvokeRateLimit?</code>, <code>ThreadInit?</code>, <code>ThreadStart?</code>, plus your own fields.</td></tr>
+		<tr><td><code>Thread.RegisterResult</code></td><td>Thread</td><td><code>{ Module: ModuleScript, Success: boolean, Result: any, Error: any }</code></td></tr>
+		<tr><td><code>Thread.Middleware</code></td><td>Thread (re-exported from Channel)</td><td><code>{ Inbound: MiddlewareList?, Outbound: MiddlewareList? }</code></td></tr>
+		<tr><td><code>Channel.MiddlewareFn</code></td><td>Channel</td><td><code>(player: Player, args: {any}) -&gt; boolean</code></td></tr>
+		<tr><td><code>Channel.WrapOptions</code></td><td>Channel</td><td><code>{ Middleware?, RateLimit?, InvokeRateLimit? }</code></td></tr>
+		<tr><td><code>Promise.Promise&lt;T&gt;</code></td><td>Promise</td><td>The Promise type itself.</td></tr>
+		<tr><td><code>Signal.Signal</code> / <code>Signal.Connection</code></td><td>Util/Signal</td><td>The Util Signal's own types.</td></tr>
+		<tr><td><code>Trove.Trackable</code> / <code>Trove.SignalLike</code></td><td>Util/Trove</td><td>What kinds of values <code>Trove:Add</code>/<code>:Connect</code> accept.</td></tr>
+		<tr><td><code>Option.Option&lt;T&gt;</code> / <code>Option.MatchTable&lt;T&gt;</code></td><td>Util/Option</td><td>The Option type and the shape <code>:Match({...})</code> expects.</td></tr>
+		<tr><td><code>EnumList.EnumList</code> / <code>EnumList.EnumItem</code></td><td>Util/EnumList</td><td>The EnumList type and the shape of one of its items.</td></tr>
+	</table>
+	</div>
+
+	<h2 id="testing">Testing</h2>
+	<p>
+		A tiny, dependency-free test runner lives under <code>Tests/</code> (no TestEZ, no
+		Wally — just <code>pcall</code> + <code>assert</code>).
+	</p>
+	<ol>
+		<li>Copy the <code>Thread/</code> and <code>Tests/</code> folders into your Rojo project (or Studio, as siblings), so <code>Tests/Thread.spec.luau</code> can reach <code>../Packages</code>.</li>
+		<li>Start a Play/Test session in Studio, then paste into the Command Bar:
+			<pre><code><span class="tok-func">require</span>(<span class="tok-func">game</span>.ServerScriptService.Tests[<span class="tok-string">"Thread.spec"</span>])</code></pre>
+		</li>
+		<li>Read the Output window — <code>[PASS]</code>/<code>[FAIL]</code> per test case, with a summary line at the end.</li>
+	</ol>
+
+	<h2 id="troubleshooting">Troubleshooting</h2>
+
+	<h3><code>No service named 'X' is registered</code></h3>
+	<p>You're calling <code>Thread.GetService</code> for a service that isn't registered <em>on that side</em>. If <code>X</code> is a server-only service and you're on the client, use <code>Channel.BuildClient("X")</code> instead.</p>
+
+	<h3>Remote/service marker timeout errors</h3>
+	<p><code>'&lt;Name&gt;' does not exist after waiting &lt;N&gt;s</code> / <code>Service '&lt;Name&gt;' was never wired by the server</code> — the client is waiting for a Remote/service marker the server never created. Usually a race condition (client called <code>Channel.BuildClient</code> before the server's <code>Thread.Start()</code> ran) or a misspelled service name.</p>
+
+	<h3>A critical service's failure didn't crash my script</h3>
+	<p>That's the default, intentional behavior. Handle it via <code>Thread.Start():catch(...)</code>, or opt back into the old behavior with <code>Thread.Configure({ HaltOnCriticalFailure = true })</code>.</p>
+
+	<h3>Rate limit warnings in the output</h3>
+	<p>A player is calling a Method/Signal faster than the configured limit — either legitimate rapid input (raise the limit via <code>RateLimit</code>/<code>InvokeRateLimit</code>) or exploit/spam attempts (leave it, that's the protection working).</p>
+
+	<h3>Duplicate service name error</h3>
+	<p>Two different ModuleScripts called <code>Thread.CreateService({ Name = "X" })</code> with the same name — names must be unique per side.</p>
+
+	<h2 id="api-thread">Full API Reference — <code>Thread</code></h2>
+	<div class="table-wrap">
+	<table>
+		<tr><th>Function</th><th>Description</th></tr>
+		<tr><td><code>Thread.CreateService(def)</code></td><td>Registers a service. <code>def</code> may include <code>Client</code>, <code>Dependencies</code>, <code>Middleware</code>, <code>Critical</code>, <code>RateLimit</code>, <code>InvokeRateLimit</code>, <code>ThreadInit</code>, <code>ThreadStart</code>.</td></tr>
+		<tr><td><code>Thread.GetService(name)</code></td><td>Returns a registered service (this side's registry) or errors.</td></tr>
+		<tr><td><code>Thread.GetServices()</code></td><td>Returns a copy of the full service registry.</td></tr>
+		<tr><td><code>Thread.Unregister(name)</code></td><td>Removes a service before <code>Start()</code>.</td></tr>
+		<tr><td><code>Thread.Register(folder, recursive?)</code></td><td>Requires every ModuleScript under <code>folder</code>; returns a results report.</td></tr>
+		<tr><td><code>Thread.Start()</code></td><td>Binds Client remotes, runs <code>ThreadInit</code> then <code>ThreadStart</code> in dependency order. Returns the start Promise.</td></tr>
+		<tr><td><code>Thread.OnStart()</code></td><td>Returns the start Promise, safe to call any time, from anywhere.</td></tr>
+		<tr><td><code>Thread.Configure({ Debug, HaltOnCriticalFailure })</code></td><td>Central configuration.</td></tr>
+		<tr><td><code>Thread.CreateSignal()</code> / <code>Thread.CreateUnreliableSignal()</code> / <code>Thread.CreateProperty(v)</code></td><td>Markers for use inside a service's <code>Client</code> table.</td></tr>
+		<tr><td><code>Thread.Version</code></td><td>Current version string.</td></tr>
+		<tr><td><code>Thread.Channel</code></td><td>Direct access to the Channel module.</td></tr>
+		<tr><td><code>Thread.Signal</code> / <code>.Trove</code> / <code>.TableUtil</code> / <code>.Option</code> / <code>.EnumList</code></td><td>Direct access to the Util modules.</td></tr>
+	</table>
+	</div>
+
+	<h2 id="api-channel">Full API Reference — <code>Channel</code></h2>
+	<div class="table-wrap">
+	<table>
+		<tr><th>Function</th><th>Description</th></tr>
+		<tr><td><code>Channel.WrapService(name, clientTable, opts?)</code></td><td>Server-only. Binds a Client table to real Remotes. Called automatically by <code>Thread.Start()</code>.</td></tr>
+		<tr><td><code>Channel.BuildClient(name, timeout?)</code></td><td>Client-only. Returns a proxy for a wrapped service.</td></tr>
+		<tr><td><code>Channel.Destroy(name)</code></td><td>Removes every Remote created for a service.</td></tr>
+		<tr><td><code>Channel.On/FireClient/FireAll/FireServer/SetFunction/InvokeServer/InvokeClient/Event/Function</code></td><td>Low-level, string-keyed API.</td></tr>
+		<tr><td><code>Channel.Configure({...})</code></td><td>Bulk-set <code>Channel.Debug</code>, <code>Channel.DefaultRateLimit</code>, etc.</td></tr>
+	</table>
+	</div>
+
+	<h2 id="api-property">Full API Reference — <code>Property</code></h2>
+	<div class="table-wrap">
+	<table>
+		<tr><th>Method</th><th>Where</th><th>Description</th></tr>
+		<tr><td><code>:Get()</code></td><td>both</td><td>Client: last received value. Server: the shared default.</td></tr>
+		<tr><td><code>:Set(value)</code></td><td>server</td><td>Sets the default and broadcasts to every client without an override.</td></tr>
+		<tr><td><code>:SetFor(player, value)</code></td><td>server</td><td>Sets a value visible only to <code>player</code>.</td></tr>
+		<tr><td><code>:GetFor(player)</code></td><td>server</td><td>Reads <code>player</code>'s override, or the default if none.</td></tr>
+		<tr><td><code>:ClearFor(player)</code></td><td>server</td><td>Removes <code>player</code>'s override.</td></tr>
+		<tr><td><code>:Observe(fn)</code></td><td>client</td><td>Calls <code>fn</code> immediately and on every change; returns a <code>{Disconnect}</code> handle.</td></tr>
+		<tr><td><code>:Destroy()</code></td><td>server</td><td>Disconnects the internal PlayerRemoving connection.</td></tr>
+	</table>
+	</div>
+
+	<h2 id="api-signal">Full API Reference — <code>Signal</code> (Client-table version)</h2>
+	<div class="table-wrap">
+	<table>
+		<tr><th>Method</th><th>Where</th><th>Description</th></tr>
+		<tr><td><code>:Fire(...)</code></td><td>both</td><td>Server: <code>:Fire(player, ...)</code> to one client. Client: <code>:Fire(...)</code> to the server.</td></tr>
+		<tr><td><code>:FireAll(...)</code></td><td>server</td><td>To every client.</td></tr>
+		<tr><td><code>:FireExcept(player, ...)</code></td><td>server</td><td>To every client except <code>player</code>.</td></tr>
+		<tr><td><code>:Connect(fn)</code></td><td>both</td><td>Server handler gets <code>(player, ...)</code>; client handler gets <code>(...)</code>.</td></tr>
+		<tr><td><code>:Destroy()</code></td><td>both</td><td>Disconnects/destroys the underlying Remote.</td></tr>
+	</table>
+	</div>
+	<p>
+		This is a different <code>Signal</code> class from the standalone <code>Util/Signal.luau</code>
+		— same name, but one is Remote-backed (this one) and the other is pure in-process pub/sub.
+		See the <a href="utilities.html#signal">Util Modules page</a> for that one.
+	</p>
+
+	<p>See <a href="promise.html">Promise</a> and <a href="utilities.html">Util Modules</a> for their complete references, and the <a href="https://github.com/realthonik/Thread/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a> for version history.</p>
+
+	<div class="page-nav">
+		<a href="utilities.html">
+			<span class="dir">Previous</span>
+			← Util Modules
+		</a>
+		<a class="next" href="index.html">
+			<span class="dir">Back to</span>
+			Home →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

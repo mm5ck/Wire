@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client Table & Networking — Thread</title>
+<meta name="description" content="Methods, Signals, and Properties in Thread's Client table, and how the networking works under the hood.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html">Home</a>
+		<a href="installation.html">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html" class="active">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html">Configuration &amp; Low-Level API</a>
+		<a href="promise.html">Promise</a>
+		<a href="utilities.html">Util Modules</a>
+		<a href="reference.html">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="eyebrow">Core Concepts</div>
+	<h1>The Client Table: Methods, Signals, Properties</h1>
+	<p class="lede">
+		This is the feature that replaces manually wiring up <code>RemoteEvent</code>/<code>RemoteFunction</code>
+		instances. A service can declare a <code>Client</code> table describing exactly what
+		it exposes to clients.
+	</p>
+
+	<pre><code><span class="tok-keyword">local</span> MoneyService = Thread.CreateService({
+    Name = <span class="tok-string">"MoneyService"</span>,
+    Client = {
+        <span class="tok-comment">-- 1) A METHOD: the client calls this and gets a return value back.</span>
+        GetMoney = <span class="tok-keyword">function</span>(self, player)
+            <span class="tok-keyword">return</span> self.Server:GetMoney(player)
+        <span class="tok-keyword">end</span>,
+
+        <span class="tok-comment">-- 2) A SIGNAL: a one-off push event, server -> client.</span>
+        MoneyChanged = Thread.CreateSignal(),
+
+        <span class="tok-comment">-- 3) A PROPERTY: a value kept in sync with clients automatically.</span>
+        Jackpot = Thread.CreateProperty(<span class="tok-string">0</span>),
+    },
+})</code></pre>
+
+	<ul>
+		<li>Every <code>Client</code> method receives <code>self</code> (the <code>Client</code> table itself — not the outer service) and <code>player</code> (automatically injected — the client can't fake this) as its first two arguments, then whatever the client passed.</li>
+		<li><code>self.Server</code> is a back-reference to the outer service table, so a <code>Client</code> method can call the "real" implementation: <code>self.Server:GetMoney(player)</code>.</li>
+		<li><code>Thread.CreateSignal()</code> / <code>Thread.CreateProperty(v)</code> are just <strong>markers</strong>. When <code>Thread.Start()</code> calls <code>Channel.WrapService</code>, it walks the <code>Client</code> table and replaces each marker <strong>in place</strong> with a real Signal/Property object.</li>
+		<li><code>Thread.CreateSignal</code>, <code>Thread.CreateUnreliableSignal</code>, and <code>Thread.CreateProperty</code> are literally the same functions as <code>Channel.CreateSignal</code>/<code>Channel.CreateUnreliableSignal</code>/<code>Channel.CreateProperty</code> — re-exported for convenience.</li>
+	</ul>
+
+	<h2>Which one do I use?</h2>
+	<div class="table-wrap">
+	<table>
+		<tr><th>Situation</th><th>Use</th></tr>
+		<tr><td>Client asks a one-time question and needs an answer ("how much money do I have?")</td><td><strong>Method</strong></td></tr>
+		<tr><td>Server wants to push a one-off event ("you leveled up", "explosion at X")</td><td><strong>Signal</strong></td></tr>
+		<tr><td>A value needs to stay in sync and be readable at any time, including for a client who joins late</td><td><strong>Property</strong></td></tr>
+		<tr><td>A cosmetic, high-frequency event where occasional packet loss is fine (footstep VFX)</td><td><strong>UnreliableSignal</strong> (<code>Thread.CreateUnreliableSignal()</code>)</td></tr>
+	</table>
+	</div>
+
+	<h2>Using a Signal</h2>
+	<pre><code><span class="tok-comment">-- Server</span>
+<span class="tok-keyword">function</span> MoneyService:GiveMoney(player, amount)
+    balances[player] = self:GetMoney(player) + amount
+    self.Client.MoneyChanged:Fire(player, balances[player])       <span class="tok-comment">-- to one player</span>
+    self.Client.MoneyChanged:FireAll(balances[player])             <span class="tok-comment">-- to everyone</span>
+    self.Client.MoneyChanged:FireExcept(player, balances[player])  <span class="tok-comment">-- to everyone but `player`</span>
+<span class="tok-keyword">end</span></code></pre>
+
+	<pre><code><span class="tok-comment">-- Client</span>
+MoneyService.MoneyChanged:Connect(<span class="tok-keyword">function</span>(newBalance)
+    <span class="tok-func">print</span>(<span class="tok-string">"New balance:"</span>, newBalance)
+<span class="tok-keyword">end</span>)</code></pre>
+
+	<p>
+		A Signal built from <code>Thread.CreateSignal()</code> can also be fired <em>from</em>
+		the client back to the server (<code>MoneyService.SomeSignal:Fire(...)</code> on the
+		client) — it's a two-way object, just used one-directionally above. On the server,
+		<code>:Connect(fn)</code> receives <code>(player, ...)</code>.
+	</p>
+
+	<h2>Using a Property</h2>
+	<pre><code><span class="tok-comment">-- Server</span>
+self.Client.Jackpot:Set(<span class="tok-string">500</span>)              <span class="tok-comment">-- new value, broadcast to everyone (see override note below)</span>
+<span class="tok-keyword">local</span> current = self.Client.Jackpot:Get() <span class="tok-comment">-- read the shared default back</span>
+
+<span class="tok-comment">-- Per-player overrides (e.g. a personalized value only one player sees):</span>
+self.Client.Jackpot:SetFor(player, <span class="tok-string">9999</span>)
+self.Client.Jackpot:GetFor(player)     <span class="tok-comment">-- 9999 for that player, the default for everyone else</span>
+self.Client.Jackpot:ClearFor(player)   <span class="tok-comment">-- back to the shared default</span></code></pre>
+
+	<pre><code><span class="tok-comment">-- Client</span>
+<span class="tok-func">print</span>(MoneyService.Jackpot:Get())  <span class="tok-comment">-- last known value, synchronously</span>
+
+MoneyService.Jackpot:Observe(<span class="tok-keyword">function</span>(value)
+    <span class="tok-func">print</span>(<span class="tok-string">"Jackpot is now"</span>, value)
+<span class="tok-keyword">end</span>)
+<span class="tok-comment">-- Observe calls your function IMMEDIATELY with the current value, then again</span>
+<span class="tok-comment">-- on every future change. Always use Observe over a manual :Get() + polling.</span></code></pre>
+
+	<p>
+		<code>Property:Set(value)</code> broadcasts to every currently-connected client
+		<strong>except</strong> those with an active <code>:SetFor</code> override — so setting
+		the shared default never clobbers a personalized value. A newly-created
+		<code>Property</code> fetches its own current value synchronously the first time a
+		client builds it, so late-joining players never see a stale/default value.
+	</p>
+
+	<p>
+		There's also <code>Property:Destroy()</code> (both sides), which disconnects the
+		internal <code>PlayerRemoving</code> connection a server-side Property keeps around
+		to clean up per-player overrides. You won't normally call this directly —
+		<code>Channel.Destroy(serviceName)</code> tears down the underlying Remotes for you.
+	</p>
+
+	<h2>How Networking Actually Works Under the Hood</h2>
+	<p>Understanding this makes debugging a lot easier.</p>
+	<ol>
+		<li>The first time <code>Channel.luau</code> loads (server or client), it creates (or, on the client, waits for) a folder at <code>ReplicatedStorage.ThreadChannel</code>. All Remote instances live under here.</li>
+		<li>When the server calls <code>Channel.WrapService("MoneyService", clientTable, opts)</code>, for every key in <code>clientTable</code> it creates one Remote object per key, under a namespaced folder: e.g. a Method named <code>GetMoney</code> becomes a <code>RemoteFunction</code> at <code>ReplicatedStorage.ThreadChannel.RemoteFunction.MoneyService.GetMoney</code>. Namespacing by service name means two different services can both expose a method called <code>GetMoney</code> without colliding.</li>
+		<li>Every Remote gets a Roblox <strong>Attribute</strong> called <code>ThreadKind</code> set to <code>"Method"</code>, <code>"Signal"</code>, or <code>"Property"</code>. This is how the client later figures out how to wrap each Remote — pure metadata, doesn't touch Lua state at all.</li>
+		<li><code>Channel.WrapService</code> also creates one lightweight marker folder per service at <code>ReplicatedStorage.ThreadChannel.Services.&lt;ServiceName&gt;</code>. This exists purely so <code>Channel.BuildClient</code> has exactly one thing to wait on — without it, a service that only exposes Methods would never create a <code>RemoteEvent</code> folder at all, and the client would sit there waiting the full timeout for a folder that was never coming.</li>
+		<li><code>Channel.BuildClient("MoneyService")</code> on the client waits for that marker folder, then scans <code>RemoteFunction</code>/<code>RemoteEvent</code>/<code>UnreliableRemoteEvent</code> for a <code>MoneyService</code> subfolder, reads each child's <code>ThreadKind</code> attribute, and builds the appropriate wrapper.</li>
+	</ol>
+	<p>
+		None of this requires you to know service names or method names on both ends
+		independently — the server's <code>Client</code> table <em>is</em> the single source
+		of truth; the client just reads it back out of the Remote hierarchy.
+	</p>
+
+	<div class="page-nav">
+		<a href="services.html">
+			<span class="dir">Previous</span>
+			← Services &amp; Lifecycle
+		</a>
+		<a class="next" href="dependencies-middleware.html">
+			<span class="dir">Next</span>
+			Dependencies, Middleware &amp; Failure →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

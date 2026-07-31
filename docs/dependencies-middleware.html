@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dependencies, Middleware & Failure — Thread</title>
+<meta name="description" content="Dependency ordering between services, request middleware, and critical-service failure handling.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html">Home</a>
+		<a href="installation.html">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html" class="active">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html">Configuration &amp; Low-Level API</a>
+		<a href="promise.html">Promise</a>
+		<a href="utilities.html">Util Modules</a>
+		<a href="reference.html">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="eyebrow">Core Concepts</div>
+	<h1>Dependencies, Middleware &amp; Startup Failure</h1>
+	<p class="lede">
+		Three related mechanisms for controlling startup order, validating requests, and
+		deciding what happens when a service can't start.
+	</p>
+
+	<h2>Dependencies Between Services</h2>
+	<pre><code>Thread.CreateService({
+    Name = <span class="tok-string">"InventoryService"</span>,
+    Dependencies = { <span class="tok-string">"DataService"</span> }, <span class="tok-comment">-- DataService's ThreadInit is guaranteed to run first</span>
+    ThreadInit = <span class="tok-keyword">function</span>(self)
+        self.Data = Thread.GetService(<span class="tok-string">"DataService"</span>)
+    <span class="tok-keyword">end</span>,
+})</code></pre>
+
+	<p>
+		Internally, <code>Thread.Start()</code> builds a dependency graph from every service's
+		<code>Dependencies</code> list and runs a topological sort (depth-first, tracking a
+		"visiting" state per node) before calling any <code>ThreadInit</code>. Two failure
+		modes are caught <strong>before</strong> any service code runs at all, with a precise
+		error message:
+	</p>
+	<ul>
+		<li><strong>Unknown dependency</strong>: a service lists a name that was never registered.</li>
+		<li><strong>Circular dependency</strong>: e.g. A depends on B, B depends on A. The error message includes the exact cycle (<code>A -&gt; B -&gt; A</code>).</li>
+	</ul>
+	<p>
+		Either failure rejects <code>Thread.OnStart()</code> the same way a critical failure
+		does (below) — it does not crash your script by default.
+	</p>
+	<p>
+		You only need <code>Dependencies</code> when a service reads another service's state
+		<strong>during <code>ThreadInit</code></strong>. If two services only reference each
+		other from <code>ThreadStart</code> (which always runs after every
+		<code>ThreadInit</code>) or later, you don't need to declare anything.
+	</p>
+
+	<h2>Middleware</h2>
+	<p>
+		Middleware runs for everything in a service's <code>Client</code> table — Methods,
+		Signals, and Properties — either transforming or rejecting the call before it reaches
+		your code (<code>Inbound</code>) or before it goes out to the client (<code>Outbound</code>).
+	</p>
+
+	<pre><code>Thread.CreateService({
+    Name = <span class="tok-string">"ShopService"</span>,
+    Client = {
+        Purchase = <span class="tok-keyword">function</span>(self, player, itemId)
+            <span class="tok-comment">-- ... itemId is guaranteed to be a string by the time we get here</span>
+        <span class="tok-keyword">end</span>,
+    },
+    Middleware = {
+        Inbound = {
+            <span class="tok-keyword">function</span>(player, args)
+                <span class="tok-keyword">if</span> <span class="tok-func">typeof</span>(args[<span class="tok-string">1</span>]) ~= <span class="tok-string">"string"</span> <span class="tok-keyword">then</span>
+                    <span class="tok-keyword">return</span> <span class="tok-keyword">false</span> <span class="tok-comment">-- returning false drops the call entirely</span>
+                <span class="tok-keyword">end</span>
+                <span class="tok-keyword">return</span> <span class="tok-keyword">true</span>
+            <span class="tok-keyword">end</span>,
+        },
+    },
+})</code></pre>
+
+	<p>
+		A middleware function receives <code>(player, args)</code> where <code>args</code> is
+		a plain array of the call's arguments (inbound) or its return value(s)/broadcast
+		payload (outbound). It can <strong>mutate <code>args</code> in place</strong> to
+		transform them, and returns <code>false</code> to stop the chain. Multiple middleware
+		functions run in the order given, each seeing the previous one's mutations.
+	</p>
+
+	<div class="table-wrap">
+	<table>
+		<tr><th>On a...</th><th>Inbound runs when...</th><th>Outbound runs when...</th></tr>
+		<tr>
+			<td>Method</td>
+			<td>the client calls it, before your handler runs. Returning <code>false</code> means your handler never executes and the client gets <code>nil</code> back.</td>
+			<td>your handler returns, before the result is sent back. Returning <code>false</code> sends <code>nil</code> instead.</td>
+		</tr>
+		<tr>
+			<td>Signal</td>
+			<td>the client fires it (received via <code>:Connect</code> on the server), before your handler runs.</td>
+			<td>the server calls <code>:Fire</code>/<code>:FireAll</code>/<code>:FireExcept</code>, before the event goes out. Returning <code>false</code> silently drops that send.</td>
+		</tr>
+		<tr>
+			<td>Property</td>
+			<td>— (there's no "inbound" for a Property; the client never pushes data through one)</td>
+			<td>the server calls <code>:Set</code>/<code>:SetFor</code>, before the new value is stored and broadcast. Returning <code>false</code> leaves the value unchanged.</td>
+		</tr>
+	</table>
+	</div>
+
+	<p>
+		For <code>Outbound</code> on <code>Signal:FireAll</code>/<code>:FireExcept</code> and
+		<code>Property:Set</code>, there's no single target player yet (it's going to
+		everyone), so middleware there is called with <code>player = nil</code> — write your
+		middleware to handle that if you use those.
+	</p>
+
+	<p>
+		Use middleware for validation/logging/transformation that applies across
+		<strong>multiple</strong> methods/signals/properties on a service. For a check that
+		only applies to one specific method, a plain <code>if</code>/<code>assert</code> at
+		the top of that method is simpler and easier to read.
+	</p>
+
+	<h2>Critical Services &amp; Startup Failure</h2>
+	<pre><code>Thread.CreateService({
+    Name = <span class="tok-string">"DataService"</span>,
+    Critical = <span class="tok-keyword">true</span>, <span class="tok-comment">-- a failed ThreadInit/ThreadStart here rejects the whole Thread.Start()</span>
+})
+
+Thread.Start():catch(<span class="tok-keyword">function</span>(err)
+    <span class="tok-func">warn</span>(<span class="tok-string">"Startup failed:"</span>, err)
+    <span class="tok-comment">-- e.g. kick all players, since data can't load</span>
+<span class="tok-keyword">end</span>)</code></pre>
+
+	<p>
+		If a service marked <code>Critical = true</code> throws inside <code>ThreadInit</code>
+		or <code>ThreadStart</code>, <code>Thread.Start()</code> stops processing further
+		services and the <code>Promise</code> returned by
+		<code>Thread.Start()</code>/<code>Thread.OnStart()</code> <strong>rejects</strong>
+		with a descriptive message. By default this does <strong>not</strong> crash the script
+		that called <code>Thread.Start()</code> — you decide what to do via <code>:catch()</code>.
+	</p>
+
+	<p>If you'd rather have the old, harder failure mode (immediately <code>error()</code>, killing the calling script), opt in explicitly:</p>
+	<pre><code>Thread.Configure({ HaltOnCriticalFailure = <span class="tok-keyword">true</span> })</code></pre>
+
+	<p>
+		Non-critical services that throw during <code>ThreadInit</code>/<code>ThreadStart</code>
+		just log a warning and are skipped — the rest of startup continues normally. Only mark
+		a service <code>Critical</code> if the game genuinely can't function without it
+		(typically: your data-persistence service).
+	</p>
+
+	<div class="page-nav">
+		<a href="client-table.html">
+			<span class="dir">Previous</span>
+			← Client Table &amp; Networking
+		</a>
+		<a class="next" href="configuration.html">
+			<span class="dir">Next</span>
+			Configuration &amp; Low-Level API →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

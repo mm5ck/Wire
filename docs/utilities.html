@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Util Modules — Thread</title>
+<meta name="description" content="Signal, Trove, TableUtil, Option, and EnumList — Thread's hand-written RbxUtil-inspired utility modules.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html">Home</a>
+		<a href="installation.html">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html">Configuration &amp; Low-Level API</a>
+		<a href="promise.html">Promise</a>
+		<a href="utilities.html" class="active">Util Modules</a>
+		<a href="reference.html">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="eyebrow">Reference</div>
+	<h1>Util Modules</h1>
+	<p class="lede">
+		Independent, requirable standalone from <code>Packages/Util/</code>, or via
+		<code>Thread.Signal</code>/<code>Thread.Trove</code>/etc. after requiring
+		<code>Thread</code>. None of them touch networking — general-purpose Lua/Roblox
+		utilities, hand-written and inspired by (not copied from) RbxUtil, the collection
+		Knit itself is built on.
+	</p>
+
+	<h2 id="signal"><code>Signal</code></h2>
+	<p>
+		A fast, pure-Luau event class, independent of <code>BindableEvent</code>. Use this for
+		in-process pub/sub between your own modules (server-only or client-only — it never
+		crosses the network) — faster than a Bindable, and unlike one, can carry any Lua value
+		(functions, tables) as an argument.
+	</p>
+	<pre><code><span class="tok-keyword">local</span> mySignal = Thread.Signal.new()
+<span class="tok-keyword">local</span> connection = mySignal:Connect(<span class="tok-keyword">function</span>(msg) <span class="tok-func">print</span>(msg) <span class="tok-keyword">end</span>)
+mySignal:Fire(<span class="tok-string">"hello"</span>)            <span class="tok-comment">-- "hello" printed</span>
+mySignal:Once(<span class="tok-keyword">function</span>() ... <span class="tok-keyword">end</span>)  <span class="tok-comment">-- fires at most once, then auto-disconnects</span>
+mySignal:Wait()                    <span class="tok-comment">-- yields the current thread until the next Fire</span>
+mySignal:GetConnections()          <span class="tok-comment">-- array of every active connection</span>
+connection.Connected               <span class="tok-comment">-- true, until :Disconnect()/:Destroy()</span>
+connection:Disconnect()            <span class="tok-comment">-- :Destroy() is an identical alias</span>
+mySignal:DisconnectAll()
+mySignal:Destroy()                 <span class="tok-comment">-- disconnects everything, incl. any wrapped RBXScriptSignal</span>
+Thread.Signal.Wrap(someRBXScriptSignal)  <span class="tok-comment">-- adapts an engine signal to this same API</span>
+Thread.Signal.Is(mySignal)         <span class="tok-comment">-- true - checks if a value is one of these Signal objects</span></code></pre>
+	<p>
+		Internally this uses a pooled-coroutine linked-list design (the same well-known
+		"GoodSignal" shape used across the Roblox ecosystem) so that firing a signal doesn't
+		allocate a fresh coroutine per call.
+	</p>
+
+	<h2 id="trove"><code>Trove</code></h2>
+	<p>
+		A cleanup/janitor helper: track a bunch of "things that need cleaning up" and tear
+		them all down with a single call, instead of manually writing out a dozen
+		<code>:Destroy()</code>/<code>:Disconnect()</code> calls.
+	</p>
+	<pre><code><span class="tok-keyword">local</span> trove = Thread.Trove.new()
+
+trove:Add(someInstance)                               <span class="tok-comment">-- cleaned up via :Destroy()</span>
+trove:Connect(player.CharacterAdded, onCharacterAdded) <span class="tok-comment">-- trove:Add(signal:Connect(fn))</span>
+trove:Add(<span class="tok-keyword">function</span>() <span class="tok-func">print</span>(<span class="tok-string">"custom cleanup"</span>) <span class="tok-keyword">end</span>)      <span class="tok-comment">-- cleaned up by calling it</span>
+trove:Add(someTable, <span class="tok-string">"Cleanup"</span>)                        <span class="tok-comment">-- via someTable:Cleanup() (custom method)</span>
+trove:Clone(somePart)                                  <span class="tok-comment">-- clones + tracks the clone</span>
+trove:Construct(SomeClass, arg1, arg2)                 <span class="tok-comment">-- SomeClass.new(arg1, arg2), tracked</span>
+
+trove:Remove(someInstance)  <span class="tok-comment">-- stop tracking it, without cleaning it up</span>
+trove:Clean()               <span class="tok-comment">-- clean up everything so far; trove stays reusable</span>
+trove:Destroy()              <span class="tok-comment">-- same as :Clean() — the trove is done</span>
+
+<span class="tok-keyword">local</span> sub = trove:Extend()  <span class="tok-comment">-- a nested Trove, auto-cleaned when the parent is</span>
+trove:AttachToInstance(someInstance) <span class="tok-comment">-- auto :Destroy() once someInstance leaves the game</span></code></pre>
+	<p>
+		<code>Trove</code> figures out the right cleanup method automatically based on the
+		value's type (<code>Destroy</code> for Instances, <code>Disconnect</code> for
+		connections, calling functions directly, <code>task.cancel</code> for threads) — pass
+		an explicit method name as the second argument to <code>:Add</code> only when the
+		default guess is wrong.
+	</p>
+
+	<h2 id="tableutil"><code>TableUtil</code></h2>
+	<p>
+		Table helper functions filling gaps in Lua's standard library. Except where noted,
+		these return a <strong>new</strong> table rather than mutating the input.
+	</p>
+	<pre><code>TableUtil.Copy(tbl, deep?)             <span class="tok-comment">-- shallow by default; deep = true copies recursively</span>
+TableUtil.Sync(src, template)          <span class="tok-comment">-- two-way: src ends up with EXACTLY template's keys (extras removed!)</span>
+TableUtil.Reconcile(src, template)     <span class="tok-comment">-- one-way: adds missing keys, never removes (safe for save data)</span>
+TableUtil.Lock(tbl)                    <span class="tok-comment">-- deep table.freeze, mutates in place</span>
+
+TableUtil.SwapRemove(arrayTbl, i)             <span class="tok-comment">-- O(1) removal, doesn't preserve order</span>
+TableUtil.SwapRemoveFirstValue(arrayTbl, v)
+TableUtil.Reverse(arrayTbl)
+TableUtil.Shuffle(arrayTbl, rng?)
+
+TableUtil.Map(tbl, <span class="tok-keyword">function</span>(value, key) <span class="tok-keyword">return</span> newValue <span class="tok-keyword">end</span>)
+TableUtil.Filter(tbl, <span class="tok-keyword">function</span>(value, key) <span class="tok-keyword">return</span> keepIt <span class="tok-keyword">end</span>)
+TableUtil.Reduce(tbl, <span class="tok-keyword">function</span>(acc, value, key) <span class="tok-keyword">return</span> newAcc <span class="tok-keyword">end</span>, initial)
+TableUtil.Find(tbl, <span class="tok-keyword">function</span>(value, key) <span class="tok-keyword">return</span> matches <span class="tok-keyword">end</span>)  <span class="tok-comment">-- returns value, key or nil, nil</span>
+TableUtil.Every(tbl, fn)  <span class="tok-comment">-- true if fn(v,k) is true for ALL entries</span>
+TableUtil.Some(tbl, fn)   <span class="tok-comment">-- true if fn(v,k) is true for ANY entry</span>
+TableUtil.Keys(tbl)
+TableUtil.Values(tbl)
+TableUtil.IsEmpty(tbl)
+TableUtil.Length(tbl)     <span class="tok-comment">-- counts ALL keys (unlike #tbl, works for dictionaries too)</span></code></pre>
+	<p>
+		<code>Reconcile</code> is the one you want for player save data: old saved tables
+		automatically gain new fields your template added, without losing data your template
+		doesn't know about. <code>Sync</code> is stricter (two-way) and is meant for things
+		like config tables where extra/stale keys genuinely should be removed.
+	</p>
+	<div class="callout warn">
+		<div class="callout-title">Filter gotcha</div>
+		<code>Map</code>/<code>Filter</code>/<code>Reduce</code>/<code>Find</code>/<code>Every</code>/<code>Some</code>/<code>Keys</code>/<code>Values</code>
+		all work over dictionaries by default. <code>Filter</code> specifically switches to
+		array behavior (preserving order, compacting indices) whenever <code>#tbl &gt; 0</code>
+		— if a table has both an array part and separate string keys, only the array part gets
+		filtered. Keep arrays and dictionaries as separate tables if you need to filter both.
+	</div>
+
+	<h2 id="option"><code>Option</code></h2>
+	<p>
+		A Rust-style <code>Option&lt;T&gt;</code>, for making "this might not have a value"
+		explicit instead of silently passing <code>nil</code> around.
+	</p>
+	<pre><code><span class="tok-keyword">local</span> result = Thread.Option.Wrap(dataStore:GetAsync(key)) <span class="tok-comment">-- Some(value) or None</span>
+
+result:Match({
+    Some = <span class="tok-keyword">function</span>(v) <span class="tok-func">print</span>(<span class="tok-string">"Got"</span>, v) <span class="tok-keyword">end</span>,
+    None = <span class="tok-keyword">function</span>() <span class="tok-func">print</span>(<span class="tok-string">"Nothing stored"</span>) <span class="tok-keyword">end</span>,
+})
+
+result:IsSome() / result:IsNone()
+result:Unwrap()                 <span class="tok-comment">-- errors if None — use when you're SURE it's Some</span>
+result:Expect(<span class="tok-string">"custom error"</span>)   <span class="tok-comment">-- errors with your message if None</span>
+result:UnwrapOr(defaultValue)
+result:UnwrapOrElse(<span class="tok-keyword">function</span>() <span class="tok-keyword">return</span> computeDefault() <span class="tok-keyword">end</span>)
+result:Contains(value)          <span class="tok-comment">-- true if Some AND equal to value</span>
+
+result:And(otherOption)         <span class="tok-comment">-- otherOption if Some, else None</span>
+result:AndThen(<span class="tok-keyword">function</span>(v) <span class="tok-keyword">return</span> Thread.Option.Wrap(...) <span class="tok-keyword">end</span>)
+result:Or(otherOption)          <span class="tok-comment">-- self if Some, else otherOption</span>
+result:OrElse(<span class="tok-keyword">function</span>() <span class="tok-keyword">return</span> Thread.Option.Wrap(...) <span class="tok-keyword">end</span>)
+
+Thread.Option.Some(value)  <span class="tok-comment">-- errors if value is nil</span>
+Thread.Option.Is(obj)      <span class="tok-comment">-- true if obj is an Option</span>
+Thread.Option.None         <span class="tok-comment">-- the shared "no value" singleton itself, not a function call</span></code></pre>
+	<p>
+		Use <code>Option</code> where a stray <code>nil</code> could realistically slip
+		through unnoticed (DataStore reads, optional config lookups). For an obvious,
+		immediately-checked <code>nil</code>, plain Lua is clearer — don't wrap everything
+		just because you can.
+	</p>
+
+	<h2 id="enumlist"><code>EnumList</code></h2>
+	<p>
+		Defines a custom enum with named, comparable, immutable members — Luau has no
+		built-in way to do this yourself.
+	</p>
+	<pre><code><span class="tok-keyword">local</span> Direction = Thread.EnumList.new(<span class="tok-string">"Direction"</span>, { <span class="tok-string">"North"</span>, <span class="tok-string">"South"</span>, <span class="tok-string">"East"</span>, <span class="tok-string">"West"</span> })
+
+<span class="tok-func">print</span>(Direction.North.Name)   <span class="tok-comment">--&gt; "North"</span>
+<span class="tok-func">print</span>(Direction.North.Value)  <span class="tok-comment">--&gt; 1 (position in the list, 1-indexed)</span>
+
+Direction:BelongsTo(Direction.North)  <span class="tok-comment">--&gt; true</span>
+Direction:GetEnumItems()              <span class="tok-comment">--&gt; array of all 4 items</span>
+Direction:GetName()                   <span class="tok-comment">--&gt; "Direction"</span>
+Direction:FromName(<span class="tok-string">"South"</span>)           <span class="tok-comment">--&gt; Direction.South</span>
+Direction:FromValue(<span class="tok-string">1</span>)                <span class="tok-comment">--&gt; Direction.North</span></code></pre>
+	<p>
+		Use this instead of raw strings whenever you have a fixed, known set of named states
+		(game phases, directions, item rarities) — a typo in a raw string (<code>"Nort"</code>)
+		fails silently; <code>Direction.Nort</code> fails immediately and loudly (nil-index).
+	</p>
+	<p>
+		Both the <code>EnumList</code> itself and every individual item are deep-frozen with
+		<code>table.freeze</code> at creation time — you can't add members after the fact or
+		mutate an item's fields, which is what makes <code>==</code> comparisons reliable.
+	</p>
+
+	<div class="page-nav">
+		<a href="promise.html">
+			<span class="dir">Previous</span>
+			← Promise
+		</a>
+		<a class="next" href="reference.html">
+			<span class="dir">Next</span>
+			Cheat Sheet, Types &amp; API Tables →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

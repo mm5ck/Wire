@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thread — a lightweight Roblox service framework</title>
+<meta name="description" content="Thread is a lightweight, dependency-free Roblox framework for services, typed networking, and Promises.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html" class="active">Home</a>
+		<a href="installation.html">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html">Configuration &amp; Low-Level API</a>
+		<a href="promise.html">Promise</a>
+		<a href="utilities.html">Util Modules</a>
+		<a href="reference.html">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="badges">
+		<span class="badge">100% Roblox-native</span>
+		<span class="badge">No Wally / no dependencies</span>
+		<span class="badge">--!strict Luau</span>
+	</div>
+
+	<div class="eyebrow">Thread</div>
+	<h1>A lightweight service framework for Roblox</h1>
+	<p class="lede">
+		A clean Service Architecture, a typed Communication System, and a small Promise
+		implementation for startup sequencing — every file is plain, hand-written
+		<code>.luau</code>. No Wally, no package manager, no third-party code.
+	</p>
+
+	<h2>Why Thread</h2>
+	<p>
+		Thread lets you define <strong>services</strong> (server) and <strong>controllers</strong>
+		(client) with a two-phase lifecycle, then expose typed methods, signals, and
+		properties to clients without manually wiring up a single <code>RemoteEvent</code>.
+		The server's <code>Client</code> table <em>is</em> the API the client gets back —
+		no string-matching two ends by hand.
+	</p>
+
+	<div class="callout">
+		<div class="callout-title">In one line</div>
+		Similar shape to Knit (services, <code>Client</code> tables, Promise-based startup),
+		but with built-in rate limiting, invoke timeouts, dependency ordering, and zero
+		external dependencies — see the
+		<a href="https://github.com/realthonik/Thread/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG</a>
+		for the full version history.
+	</div>
+
+	<h2>Quick Start</h2>
+	<pre><code><span class="tok-comment">-- ServerScriptService/Server.server.lua</span>
+<span class="tok-keyword">local</span> Thread = <span class="tok-func">require</span>(<span class="tok-func">game</span>:GetService(<span class="tok-string">"ReplicatedStorage"</span>).Packages.Thread)
+
+Thread.Register(<span class="tok-func">game</span>:GetService(<span class="tok-string">"ServerScriptService"</span>).Services)
+Thread.Start():catch(<span class="tok-func">warn</span>)</code></pre>
+
+<pre><code><span class="tok-comment">-- ServerScriptService/Services/MoneyService.luau</span>
+<span class="tok-keyword">local</span> Thread = <span class="tok-func">require</span>(<span class="tok-func">game</span>:GetService(<span class="tok-string">"ReplicatedStorage"</span>).Packages.Thread)
+
+<span class="tok-keyword">local</span> MoneyService = Thread.CreateService({
+    Name = <span class="tok-string">"MoneyService"</span>,
+    Client = {
+        GetMoney = <span class="tok-keyword">function</span>(self, player)
+            <span class="tok-keyword">return</span> self.Server:GetMoney(player)
+        <span class="tok-keyword">end</span>,
+        MoneyChanged = Thread.CreateSignal(),
+        Jackpot = Thread.CreateProperty(<span class="tok-string">0</span>),
+    },
+})
+
+<span class="tok-keyword">local</span> balances = {}
+
+<span class="tok-keyword">function</span> MoneyService:GetMoney(player)
+    <span class="tok-keyword">return</span> balances[player] <span class="tok-keyword">or</span> <span class="tok-string">0</span>
+<span class="tok-keyword">end</span>
+
+<span class="tok-keyword">return</span> MoneyService</code></pre>
+
+	<p>
+		That's it — <code>Channel.BuildClient("MoneyService")</code> on the client gets back
+		a proxy with a <code>:GetMoney()</code> method, a connectable <code>MoneyChanged</code>
+		signal, and an observable <code>Jackpot</code> property, automatically.
+	</p>
+
+	<h2>Explore the docs</h2>
+	<div class="card-grid">
+		<a class="card" href="installation.html">
+			<div class="card-title">Installation &amp; Anatomy →</div>
+			<p class="card-desc">Copy the Packages folder in, understand what each file does.</p>
+		</a>
+		<a class="card" href="services.html">
+			<div class="card-title">Services &amp; Lifecycle →</div>
+			<p class="card-desc">ThreadInit/ThreadStart, Register, Start, and how startup works.</p>
+		</a>
+		<a class="card" href="client-table.html">
+			<div class="card-title">Client Table &amp; Networking →</div>
+			<p class="card-desc">Methods, Signals, Properties — and how the wiring works under the hood.</p>
+		</a>
+		<a class="card" href="dependencies-middleware.html">
+			<div class="card-title">Dependencies &amp; Middleware →</div>
+			<p class="card-desc">Service ordering, request validation, and critical-failure handling.</p>
+		</a>
+		<a class="card" href="promise.html">
+			<div class="card-title">Promise →</div>
+			<p class="card-desc">A+-ish async primitive: race, some, retry, timeout, fromEvent, and more.</p>
+		</a>
+		<a class="card" href="utilities.html">
+			<div class="card-title">Util Modules →</div>
+			<p class="card-desc">Signal, Trove, TableUtil, Option, EnumList — hand-written, RbxUtil-inspired.</p>
+		</a>
+	</div>
+
+	<div class="page-nav">
+		<span></span>
+		<a class="next" href="installation.html">
+			<span class="dir">Next</span>
+			Installation &amp; Anatomy →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

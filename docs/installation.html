@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installation & Anatomy — Thread</title>
+<meta name="description" content="How to install Thread in a Roblox project and what each file does.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html">Home</a>
+		<a href="installation.html" class="active">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html">Configuration &amp; Low-Level API</a>
+		<a href="promise.html">Promise</a>
+		<a href="utilities.html">Util Modules</a>
+		<a href="reference.html">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="eyebrow">Get Started</div>
+	<h1>Installation &amp; Project Anatomy</h1>
+	<p class="lede">
+		Nothing here requires anything outside these files. No Wally manifest, no build
+		step — copy <code>Packages/</code> into your game and require it.
+	</p>
+
+	<h2>Project Anatomy</h2>
+	<pre><code>Thread/
+├── Packages/
+│   ├── Thread.luau      <span class="tok-comment">-- service registry + lifecycle + startup sequencing</span>
+│   ├── Channel.luau     <span class="tok-comment">-- everything networking-related (RemoteEvents/Functions)</span>
+│   ├── Promise.luau     <span class="tok-comment">-- async primitive used by Thread.Start()/OnStart()</span>
+│   └── Util/
+│       ├── Signal.luau      <span class="tok-comment">-- fast in-process pub/sub (no Instance overhead)</span>
+│       ├── Trove.luau       <span class="tok-comment">-- cleanup/janitor helper</span>
+│       ├── TableUtil.luau   <span class="tok-comment">-- table helper functions</span>
+│       ├── Option.luau      <span class="tok-comment">-- explicit nil-handling wrapper</span>
+│       └── EnumList.luau    <span class="tok-comment">-- custom, comparable enums</span>
+├── Tests/
+│   ├── TestRunner.luau   <span class="tok-comment">-- ~30-line assert-based test runner, no TestEZ</span>
+│   └── Thread.spec.luau  <span class="tok-comment">-- the actual test suite</span>
+├── README.md
+├── CHANGELOG.md
+└── LICENSE</code></pre>
+
+	<h2>Installation</h2>
+	<p>
+		Copy the whole <code>Packages/</code> folder (including the <code>Util/</code>
+		subfolder) into <code>ReplicatedStorage/Packages/</code>, either by dragging files
+		into Studio directly or via a Rojo project (Rojo is optional — nothing in this
+		codebase depends on it).
+	</p>
+
+	<pre><code>ReplicatedStorage
+└── Packages
+    ├── Thread.luau
+    ├── Channel.luau
+    ├── Promise.luau
+    └── Util
+        ├── Signal.luau
+        ├── Trove.luau
+        ├── TableUtil.luau
+        ├── Option.luau
+        └── EnumList.luau</code></pre>
+
+	<div class="callout warn">
+		<div class="callout-title">Important</div>
+		<code>Util</code> must be a <code>Folder</code> Instance containing the five modules
+		as children — <code>Thread.luau</code> requires them via
+		<code>script.Parent.Util.Signal</code> etc., so the hierarchy has to match exactly.
+	</div>
+
+	<h2>Where your own code goes</h2>
+	<p>
+		There is no fixed location for your own game code —
+		<code>Thread.Register(folder)</code> just points at whatever folder you keep your
+		services/controllers in. The conventional layout is:
+	</p>
+
+	<pre><code>ServerScriptService
+└── Services
+    ├── MoneyService.luau
+    └── DataService.luau
+
+StarterPlayer
+└── StarterPlayerScripts
+    └── Controllers
+        └── HudController.luau</code></pre>
+
+	<div class="page-nav">
+		<a href="index.html">
+			<span class="dir">Previous</span>
+			← Home
+		</a>
+		<a class="next" href="services.html">
+			<span class="dir">Next</span>
+			Services &amp; Lifecycle →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

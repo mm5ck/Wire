@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration & Low-Level API — Thread</title>
+<meta name="description" content="Rate limiting, timeouts, Thread/Channel.Configure, and the low-level string-keyed Channel API.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧵</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+
+<button class="menu-toggle">☰ Menu</button>
+
+<nav class="sidebar">
+	<div class="sidebar-brand">
+		<span class="logo">🧵 Thread</span>
+		<span class="version">v1.0.0</span>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Get Started</div>
+		<a href="index.html">Home</a>
+		<a href="installation.html">Installation &amp; Anatomy</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Core Concepts</div>
+		<a href="services.html">Services &amp; Lifecycle</a>
+		<a href="client-table.html">Client Table &amp; Networking</a>
+		<a href="dependencies-middleware.html">Dependencies, Middleware &amp; Failure</a>
+	</div>
+
+	<div class="nav-group">
+		<div class="nav-group-title">Reference</div>
+		<a href="configuration.html" class="active">Configuration &amp; Low-Level API</a>
+		<a href="promise.html">Promise</a>
+		<a href="utilities.html">Util Modules</a>
+		<a href="reference.html">Cheat Sheet, Types &amp; API Tables</a>
+	</div>
+
+	<div class="sidebar-footer">
+		<a href="https://github.com/realthonik/Thread" target="_blank" rel="noopener">GitHub Repository ↗</a>
+	</div>
+</nav>
+
+<main>
+<div class="content">
+
+	<div class="eyebrow">Reference</div>
+	<h1>Configuration &amp; Low-Level API</h1>
+	<p class="lede">
+		The built-in protections that apply automatically, how to tune them, and the
+		original string-keyed networking API for quick one-off events.
+	</p>
+
+	<h2>Rate Limiting &amp; Timeouts</h2>
+	<p>
+		Two protections apply automatically to every Client method/Signal (and to the
+		low-level <code>Channel.On</code>/<code>SetFunction</code>), without you having to
+		configure anything:
+	</p>
+	<ul>
+		<li>
+			<strong>Per-player rate limiting</strong>: each Remote tracks calls per player in a
+			rolling 1-second window. Default limits are <code>Channel.DefaultRateLimit = 30</code>/sec
+			for Signals and <code>Channel.DefaultInvokeRateLimit = 20</code>/sec for Methods —
+			override per-service with <code>RateLimit</code>/<code>InvokeRateLimit</code> fields
+			on <code>Thread.CreateService({...})</code>, or globally via
+			<code>Channel.Configure({...})</code>. Calls over the limit are dropped silently
+			(server-side, with a warning logged) — the client never even knows.
+		</li>
+		<li>
+			<strong><code>Channel.InvokeClient</code> timeout</strong>: server-to-client
+			<code>InvokeClient</code> calls give up after <code>Channel.InvokeClientTimeout</code>
+			seconds (default 10) instead of hanging forever if the client is unresponsive or
+			disconnects mid-call.
+		</li>
+	</ul>
+	<div class="callout warn">
+		<div class="callout-title">No timeout on InvokeServer</div>
+		There is currently <strong>no</strong> timeout on client-to-server
+		<code>InvokeServer</code> calls (i.e. calling a <code>Client</code> Method from the
+		client) — that's standard Roblox behavior, not something Thread adds protection for.
+		If you need one, wrap the call:
+		<code>Promise.new(function(resolve) resolve(MyService:SomeMethod()) end):timeout(5)</code>.
+	</div>
+
+	<h2>Configuration</h2>
+	<pre><code>Thread.Configure({
+    Debug = <span class="tok-keyword">true</span>,                  <span class="tok-comment">-- verbose [Thread]/[Channel] logging, off by default</span>
+    HaltOnCriticalFailure = <span class="tok-keyword">false</span>,  <span class="tok-comment">-- see Dependencies, Middleware & Failure</span>
+})
+
+Channel.Configure({
+    DefaultRateLimit = <span class="tok-string">60</span>,
+    DefaultInvokeRateLimit = <span class="tok-string">30</span>,
+    InvokeClientTimeout = <span class="tok-string">15</span>,
+    WaitTimeout = <span class="tok-string">15</span>, <span class="tok-comment">-- how long the client waits for server-created Remotes to appear</span>
+})</code></pre>
+	<p>
+		Call <code>Thread.Configure</code>/<code>Channel.Configure</code> once, early, before
+		<code>Thread.Start()</code>. <code>Debug = true</code> is genuinely useful while
+		developing — it prints every service registration, remote creation, and lifecycle
+		step — but noisy in production, hence the <code>false</code> default.
+	</p>
+
+	<h2>The Low-Level Channel API</h2>
+	<p>
+		For quick, one-off networking that doesn't belong to any particular service's
+		<code>Client</code> table — this is the original string-keyed API, unchanged from the
+		original v1.1.1 project:
+	</p>
+	<pre><code><span class="tok-comment">-- Server</span>
+Channel.On(<span class="tok-string">"PlayerJumped"</span>, <span class="tok-keyword">function</span>(player)
+    <span class="tok-func">print</span>(player.Name, <span class="tok-string">"jumped"</span>)
+<span class="tok-keyword">end</span>)
+
+<span class="tok-comment">-- Client</span>
+Channel.FireServer(<span class="tok-string">"PlayerJumped"</span>)</code></pre>
+
+	<div class="table-wrap">
+	<table>
+		<tr><th>Function</th><th>Direction</th><th>Description</th></tr>
+		<tr><td><code>Channel.On(name, callback, rateLimit?)</code></td><td>both</td><td>Listens for a RemoteEvent. Server callback gets <code>(player, ...)</code>; client gets <code>(...)</code>.</td></tr>
+		<tr><td><code>Channel.FireClient(name, player, ...)</code></td><td>server → one client</td><td></td></tr>
+		<tr><td><code>Channel.FireAll(name, ...)</code></td><td>server → all clients</td><td></td></tr>
+		<tr><td><code>Channel.FireServer(name, ...)</code></td><td>client → server</td><td></td></tr>
+		<tr><td><code>Channel.SetFunction(name, callback, rateLimit?)</code></td><td>both</td><td>Sets up a RemoteFunction handler.</td></tr>
+		<tr><td><code>Channel.InvokeServer(name, ...)</code></td><td>client → server</td><td>Yields for the return value.</td></tr>
+		<tr><td><code>Channel.InvokeClient(name, player, ...)</code></td><td>server → client</td><td>Yields, with a timeout.</td></tr>
+		<tr><td><code>Channel.Event(name)</code> / <code>Channel.Function(name)</code></td><td>same-context only</td><td>Raw BindableEvent/BindableFunction. Only useful server↔server or client↔client — Bindables never cross the network boundary.</td></tr>
+	</table>
+	</div>
+
+	<p>
+		Reach for the <code>Client</code> table approach first; use this low-level API when a
+		full service <code>Client</code> entry feels like overkill for a single throwaway
+		event.
+	</p>
+
+	<div class="page-nav">
+		<a href="dependencies-middleware.html">
+			<span class="dir">Previous</span>
+			← Dependencies, Middleware &amp; Failure
+		</a>
+		<a class="next" href="promise.html">
+			<span class="dir">Next</span>
+			Promise →
+		</a>
+	</div>
+
+</div>
+</main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>
