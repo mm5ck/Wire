@@ -18,7 +18,7 @@ Closes out the remaining gaps versus Knit that the beta left open, and adds hand
 ### Tests
 - Added coverage for per-player Property overrides, `Promise.race/some/retry/timeout/fromEvent`, and all five new Util modules to `Tests/Thread.spec.luau`.
 
-## 2.0.0
+## beta
 
 Rewrite on top of the original [mm5ck/Wire](https://github.com/mm5ck/Wire) v1.1.1, addressing the gaps identified when comparing it against Knit. Everything stays pure Luau for Roblox — **no Wally, no third-party packages, nothing outside the engine's own APIs** (Attributes, RemoteEvent/RemoteFunction/UnreliableRemoteEvent, Instance).
 
@@ -39,7 +39,6 @@ Rewrite on top of the original [mm5ck/Wire](https://github.com/mm5ck/Wire) v1.1.
 - **`Thread.Debug` / `Channel.Debug` now default to `false`** (was `true`) — no console spam in production by default.
 - **Critical service failures no longer hard-crash the calling script.** `Thread.Start()` always returns the start Promise; on a critical failure it now *rejects* that Promise (so `Thread.Start():catch(warn)` works like in Knit) instead of unconditionally calling `error()`. The old hard-crash behaviour is still available via `Thread.Configure({ HaltOnCriticalFailure = true })`.
 - Service init/start order is now deterministic (topological, falling back to registration order) instead of relying on Lua's unspecified `pairs()` iteration order.
-- `Thread.Version` bumped to `2.0.0` and is now the single source of truth (no more README/code version mismatch).
 - Internal `Channel` container/cache logic reworked to support per-service namespacing without breaking the existing low-level API.
 
 ### Unchanged (fully backwards compatible)
