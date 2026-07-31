@@ -2,7 +2,7 @@
 
 A lightweight Roblox framework for building scalable games with a clean **Service Architecture**, a **typed Communication System**, and a small **Promise** implementation for startup sequencing.
 
-Based on [mm5ck/Wire](https://github.com/mm5ck/Wire) v1.1.1. This version adds typed service `Client` tables, Signals/Properties (with per-player overrides), middleware, dependency ordering, a richer Promise, and hand-written equivalents of the most-used [RbxUtil](https://github.com/Sleitnick/RbxUtil) modules (Signal, Trove, TableUtil, Option, EnumList) — while staying **100% Roblox-native**: no Wally, no package manager, no third-party code. Every file here is plain `.luau`.
+Based on the previous model "Wire v1.1.1. by me" This version adds typed service `Client` tables, Signals/Properties (with per-player overrides), middleware, dependency ordering, a richer Promise, and hand-written equivalents of the most-used [RbxUtil](https://github.com/Sleitnick/RbxUtil) modules (Signal, Trove, TableUtil, Option, EnumList) — while staying **100% Roblox-native**: no Wally, no package manager, no third-party code. Every file here is plain `.luau`.
 
 ## Installation
 
