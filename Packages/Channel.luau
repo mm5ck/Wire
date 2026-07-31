@@ -483,24 +483,40 @@ end
 local Signal = {}
 Signal.__index = Signal
 
-function Signal.new(remote: RemoteEvent | UnreliableRemoteEvent, bucketKey: string, rateLimit: number?)
+function Signal.new(
+	remote: RemoteEvent | UnreliableRemoteEvent,
+	bucketKey: string,
+	rateLimit: number?,
+	inbound: MiddlewareList?,
+	outbound: MiddlewareList?
+)
 	return setmetatable({
 		_remote = remote,
 		_bucketKey = bucketKey,
 		_rateLimit = rateLimit or Channel.DefaultRateLimit,
+		_inbound = inbound,
+		_outbound = outbound,
 	}, Signal)
 end
 
--- Server: Signal:Fire(player, ...) fires to exactly one client.
--- Client: Signal:Fire(...) fires to the server.
+-- Server: Signal:Fire(player, ...) fires to exactly one client. Runs Outbound
+-- middleware (if any) first; middleware returning false drops the send.
+-- Client: Signal:Fire(...) fires to the server (no middleware here - Inbound
+-- middleware runs on the receiving end, inside :Connect, below).
 function Signal:Fire(...: any)
 	if IsServer then
 		local player = ...
 		assert(typeof(player) == "Instance" and player:IsA("Player"), "Signal:Fire (server) expects a Player as the first argument")
 
 		local args = table.pack(...)
+		local outArgs = { table.unpack(args, 2, args.n) }
+
+		if self._outbound and not RunMiddleware(self._outbound, player, outArgs) then
+			return
+		end
+
 		local ok, err = pcall(function()
-			self._remote:FireClient(player, table.unpack(args, 2, args.n))
+			self._remote:FireClient(player, table.unpack(outArgs))
 		end)
 
 		if not ok then
@@ -519,14 +535,26 @@ end
 
 function Signal:FireAll(...: any)
 	assert(IsServer, "Signal:FireAll is server-only")
-	self._remote:FireAllClients(...)
+
+	local outArgs = { ... }
+	if self._outbound and not RunMiddleware(self._outbound, nil, outArgs) then
+		return
+	end
+
+	self._remote:FireAllClients(table.unpack(outArgs))
 end
 
 function Signal:FireExcept(exceptPlayer: Player, ...: any)
 	assert(IsServer, "Signal:FireExcept is server-only")
+
+	local outArgs = { ... }
+	if self._outbound and not RunMiddleware(self._outbound, nil, outArgs) then
+		return
+	end
+
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player ~= exceptPlayer then
-			self._remote:FireClient(player, ...)
+			self._remote:FireClient(player, table.unpack(outArgs))
 		end
 	end
 end
@@ -540,7 +568,12 @@ function Signal:Connect(fn: (...any) -> ())
 				return
 			end
 
-			local ok, err = pcall(fn, player, ...)
+			local inArgs = { ... }
+			if self._inbound and not RunMiddleware(self._inbound, player, inArgs) then
+				return
+			end
+
+			local ok, err = pcall(fn, player, table.unpack(inArgs))
 			if not ok then
 				Warn("Signal handler error:", err)
 			end
@@ -566,7 +599,7 @@ end
 local Property = {}
 Property.__index = Property
 
-function Property.new(remoteEvent: RemoteEvent, remoteFunction: RemoteFunction, initialValue: any?)
+function Property.new(remoteEvent: RemoteEvent, remoteFunction: RemoteFunction, initialValue: any?, outbound: MiddlewareList?)
 	local self = setmetatable({
 		_remoteEvent = remoteEvent,
 		_remoteFunction = remoteFunction,
@@ -574,6 +607,7 @@ function Property.new(remoteEvent: RemoteEvent, remoteFunction: RemoteFunction, 
 		_overrides = {} :: { [Player]: any }, -- server-only: per-player value overrides
 		_observers = {} :: { (any) -> () },
 		_playerRemovingConnection = nil :: RBXScriptConnection?,
+		_outbound = outbound,
 	}, Property)
 
 	if IsServer then
@@ -615,9 +649,18 @@ function Property:Get(): any
 end
 
 -- Sets the default value and broadcasts it to every client that doesn't
--- currently have a per-player override (see :SetFor).
+-- currently have a per-player override (see :SetFor). Runs Outbound
+-- middleware (if any) first; middleware returning false drops the Set
+-- entirely (the stored value is left unchanged).
 function Property:Set(value: any)
 	assert(IsServer, "Property:Set is server-only")
+
+	local outArgs = { value }
+	if self._outbound and not RunMiddleware(self._outbound, nil, outArgs) then
+		return
+	end
+	value = outArgs[1]
+
 	self._value = value
 
 	for _, player in ipairs(Players:GetPlayers()) do
@@ -628,10 +671,17 @@ function Property:Set(value: any)
 end
 
 -- Sets a value visible only to `player`, overriding the shared default
--- until :ClearFor(player) is called or the player leaves.
+-- until :ClearFor(player) is called or the player leaves. Runs Outbound
+-- middleware (if any) first, the same way :Set does.
 function Property:SetFor(player: Player, value: any)
 	assert(IsServer, "Property:SetFor is server-only")
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "Property:SetFor expects a Player")
+
+	local outArgs = { value }
+	if self._outbound and not RunMiddleware(self._outbound, player, outArgs) then
+		return
+	end
+	value = outArgs[1]
 
 	self._overrides[player] = value
 	self._remoteEvent:FireClient(player, value)
@@ -758,14 +808,14 @@ function Channel.WrapService(serviceName: string, clientTable: { [any]: any }, o
 			remote:SetAttribute("ThreadKind", "Signal")
 
 			local bucketKey = serviceName .. "." .. key
-			clientTable[key] = Signal.new(remote, bucketKey, rateLimit)
+			clientTable[key] = Signal.new(remote, bucketKey, rateLimit, inbound, outbound)
 		elseif type(value) == "table" and value[1] == PROPERTY_MARKER then
 			local remoteEvent = Get("RemoteEvent", key, serviceName) :: RemoteEvent
 			local remoteFunction = Get("RemoteFunction", key, serviceName) :: RemoteFunction
 			remoteEvent:SetAttribute("ThreadKind", "Property")
 			remoteFunction:SetAttribute("ThreadKind", "Property")
 
-			clientTable[key] = Property.new(remoteEvent, remoteFunction, value[2])
+			clientTable[key] = Property.new(remoteEvent, remoteFunction, value[2], outbound)
 		end
 	end
 end

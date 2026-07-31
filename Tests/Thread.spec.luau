@@ -237,6 +237,62 @@ TestRunner.Test("Channel.WrapService turns a Property marker into a working Prop
 	Channel.Destroy(serviceName)
 end)
 
+TestRunner.Test("Channel.WrapService applies Outbound middleware to Property:Set", function()
+	local serviceName = "SpecService_PropertyMiddleware"
+	local middlewareRan = false
+
+	local client = {
+		Score = Channel.CreateProperty(0),
+	}
+
+	Channel.WrapService(serviceName, client, {
+		Middleware = {
+			Outbound = {
+				function(_player, args)
+					middlewareRan = true
+					args[1] = args[1] * 2 -- double the value on the way out
+					return true
+				end,
+			},
+		},
+	})
+
+	client.Score:Set(5)
+
+	assert(middlewareRan, "expected Outbound middleware to run")
+	assert(client.Score:Get() == 10, "expected middleware to have doubled the value to 10")
+
+	Channel.Destroy(serviceName)
+end)
+
+TestRunner.Test("Channel.WrapService Outbound middleware can block a Signal:FireAll", function()
+	local serviceName = "SpecService_SignalMiddleware"
+	local blocked = false
+
+	local client = {
+		Alert = Channel.CreateSignal(),
+	}
+
+	Channel.WrapService(serviceName, client, {
+		Middleware = {
+			Outbound = {
+				function(_player, _args)
+					blocked = true
+					return false -- drop every outgoing Alert
+				end,
+			},
+		},
+	})
+
+	-- FireAll should run (and be blocked by) the middleware without erroring,
+	-- even with zero players connected in this test session.
+	client.Alert:FireAll("test")
+
+	assert(blocked, "expected Outbound middleware to have run and blocked the fire")
+
+	Channel.Destroy(serviceName)
+end)
+
 TestRunner.Test("Channel.Destroy removes a service's remotes", function()
 	local serviceName = "SpecService_Destroy"
 	Channel.WrapService(serviceName, {

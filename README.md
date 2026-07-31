@@ -2,11 +2,59 @@
 
 A lightweight Roblox framework for building scalable games with a clean **Service Architecture**, a **typed Communication System**, and a small **Promise** implementation for startup sequencing.
 
-Based on the previous model "Wire v1.1.1. by me" This version adds typed service `Client` tables, Signals/Properties (with per-player overrides), middleware, dependency ordering, a richer Promise, and hand-written equivalents of the most-used [RbxUtil](https://github.com/Sleitnick/RbxUtil) modules (Signal, Trove, TableUtil, Option, EnumList) — while staying **100% Roblox-native**: no Wally, no package manager, no third-party code. Every file here is plain `.luau`.
+Based on the previous model "Wire v1.1.1. by me". This version adds typed service `Client` tables, Signals/Properties (with per-player overrides), middleware, dependency ordering, a richer Promise, and hand-written equivalents of the most-used [RbxUtil](https://github.com/Sleitnick/RbxUtil) modules (Signal, Trove, TableUtil, Option, EnumList) — while staying **100% Roblox-native**: no Wally, no package manager, no third-party code. Every file here is plain `.luau`.
+
+This document explains not just *what* each piece does, but *how it works internally* and *when to reach for it* — it's meant to be read top to bottom once, then used as a reference afterward.
+
+## Table of Contents
+
+- [Project Anatomy](#project-anatomy)
+- [Installation](#installation)
+- [Core Concept: Services](#core-concept-services)
+- [Bootstrapping: Register + Start](#bootstrapping-register--start)
+- [The Client Table: Methods, Signals, Properties](#the-client-table-methods-signals-properties)
+- [How Networking Actually Works Under the Hood](#how-networking-actually-works-under-the-hood)
+- [Dependencies Between Services](#dependencies-between-services)
+- [Middleware](#middleware)
+- [Critical Services & Startup Failure](#critical-services--startup-failure)
+- [Rate Limiting & Timeouts](#rate-limiting--timeouts)
+- [Configuration](#configuration)
+- [The Low-Level Channel API](#the-low-level-channel-api)
+- [Promise — Complete Reference](#promise--complete-reference)
+- [Util Modules — Complete Reference](#util-modules--complete-reference)
+- [Server vs. Client Cheat Sheet](#server-vs-client-cheat-sheet)
+- [Exported Luau Types](#exported-luau-types)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Full API Reference Tables](#full-api-reference-tables)
+
+## Project Anatomy
+
+```
+Thread/
+├── Packages/
+│   ├── Thread.luau      -- service registry + lifecycle + startup sequencing
+│   ├── Channel.luau     -- everything networking-related (RemoteEvents/Functions)
+│   ├── Promise.luau     -- async primitive used by Thread.Start()/OnStart()
+│   └── Util/
+│       ├── Signal.luau      -- fast in-process pub/sub (no Instance overhead)
+│       ├── Trove.luau       -- cleanup/janitor helper
+│       ├── TableUtil.luau   -- table helper functions
+│       ├── Option.luau      -- explicit nil-handling wrapper
+│       └── EnumList.luau    -- custom, comparable enums
+├── Tests/
+│   ├── TestRunner.luau   -- ~30-line assert-based test runner, no TestEZ
+│   └── Thread.spec.luau  -- the actual test suite
+├── README.md
+├── CHANGELOG.md
+└── LICENSE
+```
+
+Nothing here requires anything outside these files. No Wally manifest, no build step — copy `Packages/` into your game and require it.
 
 ## Installation
 
-Copy the whole `Packages/` folder (including the `Util/` subfolder) into `ReplicatedStorage/Packages/` (via Studio or a Rojo project — Rojo is optional, plain drag-and-drop into Studio works just as well since nothing here depends on it).
+Copy the whole `Packages/` folder (including the `Util/` subfolder) into `ReplicatedStorage/Packages/`, either by dragging files into Studio directly or via a Rojo project (Rojo is optional — nothing in this codebase depends on it).
 
 ```
 ReplicatedStorage
@@ -22,9 +70,59 @@ ReplicatedStorage
         └── EnumList.luau
 ```
 
-Services live in `ServerScriptService.Services`, controllers in `StarterPlayer.StarterPlayerScripts.Controllers` (or wherever you like — `Thread.Register` just points at a folder).
+`Util` **must** be a `Folder` Instance containing the five modules as children — `Thread.luau` requires them via `script.Parent.Util.Signal` etc., so the hierarchy has to match exactly.
 
-## Quick Start
+There is no fixed location for your own game code — `Thread.Register(folder)` just points at whatever folder you keep your services/controllers in. The conventional layout is:
+
+```
+ServerScriptService
+└── Services
+    ├── MoneyService.luau
+    └── DataService.luau
+
+StarterPlayer
+└── StarterPlayerScripts
+    └── Controllers
+        └── HudController.luau
+```
+
+## Core Concept: Services
+
+A **Service** is a plain Lua table describing one feature of your game. You define it once with `Thread.CreateService({...})`, then attach normal functions to it as its methods.
+
+```lua
+-- ServerScriptService/Services/MoneyService.luau
+local Thread = require(game:GetService("ReplicatedStorage").Packages.Thread)
+
+local MoneyService = Thread.CreateService({
+    Name = "MoneyService", -- required, must be unique
+})
+
+local balances = {}
+
+function MoneyService:GetMoney(player)
+    return balances[player] or 0
+end
+
+function MoneyService:GiveMoney(player, amount)
+    balances[player] = self:GetMoney(player) + amount
+end
+
+return MoneyService
+```
+
+A service can optionally define two lifecycle methods, both called automatically by `Thread.Start()`:
+
+- **`ThreadInit(self)`** — runs first, for every service, in dependency order (see [Dependencies](#dependencies-between-services)). Use this to set up internal state and grab references to other services via `Thread.GetService(...)`. Client remotes are already bound at this point (see below), so it's safe to `:Connect()` your own signals here.
+- **`ThreadStart(self)`** — runs after **every** service has finished `ThreadInit`. Use this for logic that depends on other services already being fully initialized.
+
+This two-phase split exists specifically to avoid startup-order bugs: by the time any `ThreadStart` runs, you're guaranteed every other service's `ThreadInit` already completed.
+
+The exact same `Thread.CreateService({...})` call works identically on the client — see [Server vs. Client Cheat Sheet](#server-vs-client-cheat-sheet) for the one thing that differs (the `Client` field).
+
+## Bootstrapping: Register + Start
+
+Two calls, once per side (server and client each need their own):
 
 ```lua
 -- ServerScriptService/Server.server.lua
@@ -42,112 +140,181 @@ Thread.Register(script.Parent.Controllers)
 Thread.Start():catch(warn)
 ```
 
-## A Service With a Typed Client
+**What `Thread.Register(folder, recursive?)` actually does:** it walks every `ModuleScript` directly inside `folder` (pass `recursive = true` to walk nested subfolders too) and calls `require()` on each one. Since your service files call `Thread.CreateService({...})` at the top level, simply *requiring* the module is what registers it — `Thread.Register` never has to know your service names in advance. It returns a report array so you can inspect what loaded:
 
 ```lua
--- ServerScriptService/Services/MoneyService.luau
-local Thread = require(game:GetService("ReplicatedStorage").Packages.Thread)
+local results = Thread.Register(folder)
+for _, r in ipairs(results) do
+    if not r.Success then
+        warn("Failed to load", r.Module.Name, ":", r.Error)
+    end
+end
+```
 
+**What `Thread.Start()` actually does, step by step:**
+
+1. Collects every registered service and computes a dependency order (topological sort — see [Dependencies](#dependencies-between-services)).
+2. For every service with a `Client` table, calls `Channel.WrapService(...)` to bind it to real Remote instances (server-only — silently skipped/warned on the client, see [Client Table](#the-client-table-methods-signals-properties)).
+3. Calls `ThreadInit` on every service, in dependency order.
+4. Calls `ThreadStart` on every service, in dependency order (only after **all** `ThreadInit`s finished).
+5. Resolves the start `Promise` returned by `Thread.OnStart()`.
+
+If a service marked `Critical = true` fails at step 3 or 4, steps after it are skipped and the start `Promise` **rejects** instead of resolving (see [Critical Services](#critical-services--startup-failure)).
+
+`Thread.OnStart()` returns that same `Promise` and can be called from anywhere, any number of times, from code that isn't the one that called `Thread.Start()`:
+
+```lua
+Thread.OnStart():andThen(function()
+    local MoneyService = Thread.GetService("MoneyService") -- safe now, everything is started
+end):catch(warn)
+```
+
+Remember: **the server and the client each run their own separate copy of `Thread`.** The server's `Thread._Register`, `Thread.OnStart()`, etc. are entirely independent Lua state from the client's — they don't communicate with each other automatically. That's what `Channel` (below) is for.
+
+## The Client Table: Methods, Signals, Properties
+
+This is the feature that replaces manually wiring up `RemoteEvent`/`RemoteFunction` instances. A service can declare a `Client` table describing exactly what it exposes to clients:
+
+```lua
 local MoneyService = Thread.CreateService({
     Name = "MoneyService",
     Client = {
-        -- exposed to every client as a method
+        -- 1) A METHOD: the client calls this and gets a return value back.
         GetMoney = function(self, player)
             return self.Server:GetMoney(player)
         end,
 
-        -- push-only event, server -> client
+        -- 2) A SIGNAL: a one-off push event, server -> client.
         MoneyChanged = Thread.CreateSignal(),
 
-        -- replicated value, auto-synced to all clients
+        -- 3) A PROPERTY: a value kept in sync with clients automatically.
         Jackpot = Thread.CreateProperty(0),
     },
 })
+```
 
-local balances = {}
+A few things worth understanding here:
 
-function MoneyService:GetMoney(player)
-    return balances[player] or 0
-end
+- Every `Client` method receives `self` (the `Client` table itself — note **not** the outer service) and `player` (automatically injected — the client can't fake this) as its first two arguments, then whatever the client passed.
+- `self.Server` is a back-reference to the outer service table, so a `Client` method can call the "real" implementation: `self.Server:GetMoney(player)`.
+- `Thread.CreateSignal()` / `Thread.CreateProperty(v)` are just **markers**. When `Thread.Start()` calls `Channel.WrapService`, it walks the `Client` table and replaces each marker **in place** with a real Signal/Property object. So by the time `ThreadInit` runs, `self.Client.MoneyChanged` is already a working object, not a marker.
+- `Thread.CreateSignal`, `Thread.CreateUnreliableSignal`, and `Thread.CreateProperty` are literally the same functions as `Channel.CreateSignal`/`Channel.CreateUnreliableSignal`/`Channel.CreateProperty` — `Thread` just re-exports them so you don't have to reach into `Thread.Channel` for something you'll use constantly.
 
+### Which one do I use?
+
+| Situation | Use |
+|---|---|
+| Client asks a one-time question and needs an answer ("how much money do I have?") | **Method** |
+| Server wants to push a one-off event ("you leveled up", "explosion at X") | **Signal** |
+| A value needs to stay in sync and be readable at any time, including for a client who joins late | **Property** |
+| A cosmetic, high-frequency event where occasional packet loss is fine (footstep VFX) | **UnreliableSignal** (`Thread.CreateUnreliableSignal()`) |
+
+### Using a Signal
+
+```lua
+-- Server
 function MoneyService:GiveMoney(player, amount)
     balances[player] = self:GetMoney(player) + amount
-    self.Client.MoneyChanged:Fire(player, balances[player])
+    self.Client.MoneyChanged:Fire(player, balances[player])       -- to one player
+    self.Client.MoneyChanged:FireAll(balances[player])              -- to everyone
+    self.Client.MoneyChanged:FireExcept(player, balances[player])   -- to everyone but `player`
 end
-
-function MoneyService:ThreadInit()
-    -- Client remotes are already bound at this point.
-end
-
-return MoneyService
 ```
 
 ```lua
--- StarterPlayerScripts/Controllers/MoneyController.luau
-local Thread = require(game:GetService("ReplicatedStorage").Packages.Thread)
-local Channel = Thread.Channel
-
-local MoneyService = Channel.BuildClient("MoneyService")
-
+-- Client
 MoneyService.MoneyChanged:Connect(function(newBalance)
     print("New balance:", newBalance)
 end)
+```
+
+A Signal built from `Thread.CreateSignal()` can also be fired *from* the client back to the server (`MoneyService.SomeSignal:Fire(...)` on the client) — it's a two-way object, just used one-directionally in the example above. On the server, `:Connect(fn)` receives `(player, ...)`.
+
+### Using a Property
+
+```lua
+-- Server
+self.Client.Jackpot:Set(500)                     -- new value, broadcast to everyone (see override note below)
+local current = self.Client.Jackpot:Get()        -- read the shared default back
+
+-- Per-player overrides (e.g. a personalized value only one player sees):
+self.Client.Jackpot:SetFor(player, 9999)
+self.Client.Jackpot:GetFor(player)               -- returns 9999 for that player, the default for everyone else
+self.Client.Jackpot:ClearFor(player)              -- back to the shared default
+```
+
+```lua
+-- Client
+print(MoneyService.Jackpot:Get())                -- last known value, synchronously
 
 MoneyService.Jackpot:Observe(function(value)
     print("Jackpot is now", value)
 end)
-
-print("Current money:", MoneyService:GetMoney())
+-- Observe calls your function IMMEDIATELY with the current value, then again
+-- on every future change. Always use Observe over a manual :Get() + polling.
 ```
 
-No string-matching between server and client — the shape of `Client` on the server *is* the API the client gets back from `Channel.BuildClient`.
+`Property:Set(value)` broadcasts to every currently-connected client **except** those with an active `:SetFor` override — so setting the shared default never clobbers a personalized value. A newly-created `Property` fetches its own current value synchronously the first time a client builds it, so late-joining players never see a stale/default value.
 
-### Per-Player Property Overrides
+There's also `Property:Destroy()` (both sides), which disconnects the internal `PlayerRemoving` connection a server-side Property keeps around to clean up per-player overrides when someone leaves. You won't normally call this directly — `Channel.Destroy(serviceName)` tears down the underlying Remotes for you — it's there mainly for advanced manual-teardown scenarios.
 
-A `Property` normally replicates one value to every client, but you can override it for a single player (e.g. a personalized quest state) without disturbing everyone else's value:
+## How Networking Actually Works Under the Hood
 
-```lua
-function MoneyService:GiveVipBonus(player)
-    self.Client.Jackpot:SetFor(player, 9999) -- only this player sees 9999
-end
+Understanding this makes debugging a lot easier.
 
-function MoneyService:ClearVipBonus(player)
-    self.Client.Jackpot:ClearFor(player) -- reverts to the shared default
-end
-```
+1. The first time `Channel.luau` loads (server or client), it creates (or, on the client, waits for) a folder at `ReplicatedStorage.ThreadChannel`. All Remote instances live under here.
+2. When the server calls `Channel.WrapService("MoneyService", clientTable, opts)`, for every key in `clientTable` it creates one Remote object per key, under a namespaced folder: e.g. a `Method` named `GetMoney` becomes a `RemoteFunction` at `ReplicatedStorage.ThreadChannel.RemoteFunction.MoneyService.GetMoney`. Namespacing by service name means two different services can both expose a method called `GetMoney` without colliding.
+3. Every Remote gets a Roblox **Attribute** called `ThreadKind` set to `"Method"`, `"Signal"`, or `"Property"`. This is how the client later figures out how to wrap each Remote — it's pure metadata, doesn't touch Lua state at all.
+4. `Channel.WrapService` also creates one lightweight marker folder per service at `ReplicatedStorage.ThreadChannel.Services.<ServiceName>`. This exists purely so `Channel.BuildClient` has exactly one thing to wait on — without it, a service that (say) only exposes Methods would never create a `RemoteEvent` folder at all, and the client would sit there waiting the full timeout for a folder that was never coming.
+5. `Channel.BuildClient("MoneyService")` on the client waits for that marker folder, then scans `RemoteFunction`/`RemoteEvent`/`UnreliableRemoteEvent` for a `MoneyService` subfolder, reads each child's `ThreadKind` attribute, and builds the appropriate wrapper (a plain invoke-function for Methods, a `Signal` object for Signals, a `Property` object for Properties — pairing the RemoteEvent+RemoteFunction pair a Property needs).
 
-`Property:Set(value)` still broadcasts the shared default to everyone else, skipping any player with an active override.
+None of this requires you to know service names or method names on both ends independently — the server's `Client` table *is* the single source of truth; the client just reads it back out of the Remote hierarchy.
 
 ## Dependencies Between Services
 
 ```lua
-local Thread = require(game:GetService("ReplicatedStorage").Packages.Thread)
-
 Thread.CreateService({
     Name = "InventoryService",
-    Dependencies = { "DataService" }, -- DataService's ThreadInit always runs first
+    Dependencies = { "DataService" }, -- DataService's ThreadInit is guaranteed to run first
     ThreadInit = function(self)
         self.Data = Thread.GetService("DataService")
     end,
 })
 ```
 
-Circular or unknown dependencies are caught before any service runs, with a clear error identifying the cycle. This never silently races.
+Internally, `Thread.Start()` builds a dependency graph from every service's `Dependencies` list and runs a topological sort (depth-first, tracking a "visiting" state per node) before calling any `ThreadInit`. Two failure modes are caught **before** any service code runs at all, with a precise error message:
+
+- **Unknown dependency**: a service lists a name that was never registered.
+- **Circular dependency**: e.g. A depends on B, B depends on A. The error message includes the exact cycle (`A -> B -> A`).
+
+Either failure rejects `Thread.OnStart()` the same way a [critical failure](#critical-services--startup-failure) does — it does not crash your script by default.
+
+You only need `Dependencies` when a service reads another service's state **during `ThreadInit`**. If two services only reference each other from `ThreadStart` (which always runs after every `ThreadInit`) or later, you don't need to declare anything — the two-phase lifecycle already guarantees the order you need.
 
 ## Middleware
+
+Middleware runs for every wrapped `Client` method and Signal call on a service, either transforming or rejecting the call before it reaches your code (`Inbound`) or before the result goes back to the client (`Outbound`).
 
 ```lua
 Thread.CreateService({
     Name = "ShopService",
     Client = {
-        Purchase = function(self, player, itemId) ... end,
+        Purchase = function(self, player, itemId)
+            -- ... itemId is guaranteed to be a string by the time we get here
+        end,
     },
     Middleware = {
         Inbound = {
             function(player, args)
                 if typeof(args[1]) ~= "string" then
-                    return false -- drop the call
+                    return false -- returning false drops the call entirely; your handler never runs
                 end
+                return true
+            end,
+        },
+        Outbound = {
+            function(player, args)
+                -- args[1] is what your handler returned; you could sanitize/log it here
                 return true
             end,
         },
@@ -155,12 +322,26 @@ Thread.CreateService({
 })
 ```
 
+A middleware function receives `(player, args)` where `args` is a plain array of the call's arguments (inbound) or its return value(s)/broadcast payload (outbound). It can **mutate `args` in place** to transform them, and returns `false` to stop the chain. Multiple middleware functions run in the order given, each seeing the previous one's mutations.
+
+`Middleware` is one set defined per-service and applies to **everything** in that service's `Client` table, with slightly different meanings depending on what it's attached to:
+
+| On a... | `Inbound` runs when... | `Outbound` runs when... |
+|---|---|---|
+| Method | the client calls it, before your handler runs. Returning `false` means your handler never executes and the client gets `nil` back. | your handler returns, before the result is sent back to the client. Returning `false` sends `nil` instead. |
+| Signal | the client fires it (received via `:Connect` on the server), before your handler runs. Returning `false` means your handler never sees that fire. | the server calls `:Fire`/`:FireAll`/`:FireExcept`, before the event actually goes out. Returning `false` silently drops that specific send. |
+| Property | — (there's no "inbound" for a Property; the client never pushes data through one) | the server calls `:Set`/`:SetFor`, before the new value is stored and broadcast. Returning `false` leaves the property's value completely unchanged. |
+
+For `Outbound` on `Signal:FireAll`/`:FireExcept` and `Property:Set`, there's no single target player yet (it's going to everyone), so middleware there is called with `player = nil` — write your middleware to handle that if you use those.
+
+Use middleware for validation/logging/transformation that applies across **multiple** methods/signals/properties on a service. For a check that only applies to one specific method, a plain `if`/`assert` at the top of that method is simpler and easier to read.
+
 ## Critical Services & Startup Failure
 
 ```lua
 Thread.CreateService({
     Name = "DataService",
-    Critical = true, -- a failed ThreadInit/ThreadStart here rejects Thread.Start()
+    Critical = true, -- a failed ThreadInit/ThreadStart here rejects the whole Thread.Start()
 })
 
 Thread.Start():catch(function(err)
@@ -169,54 +350,104 @@ Thread.Start():catch(function(err)
 end)
 ```
 
-By default a critical failure only rejects the start `Promise` — it does **not** crash the calling script. If you want the old hard-crash-on-critical-failure behaviour, opt in explicitly:
+If a service marked `Critical = true` throws inside `ThreadInit` or `ThreadStart`, `Thread.Start()` stops processing further services and the `Promise` returned by `Thread.Start()`/`Thread.OnStart()` **rejects** with a descriptive message. By default this does **not** crash the script that called `Thread.Start()` — you decide what to do with the rejection via `:catch()`.
+
+If you'd rather have the old, harder failure mode (immediately `error()`, killing the calling script), opt in explicitly:
 
 ```lua
 Thread.Configure({ HaltOnCriticalFailure = true })
 ```
 
+Non-critical services that throw during `ThreadInit`/`ThreadStart` just log a warning and are skipped — the rest of startup continues normally. Only mark a service `Critical` if the game genuinely can't function without it (typically: your data-persistence service).
+
+## Rate Limiting & Timeouts
+
+Two protections apply automatically to every Client method/Signal (and to the low-level `Channel.On`/`SetFunction`), without you having to configure anything:
+
+- **Per-player rate limiting**: each Remote tracks calls per player in a rolling 1-second window. Default limits are `Channel.DefaultRateLimit = 30`/sec for Signals and `Channel.DefaultInvokeRateLimit = 20`/sec for Methods — override per-service with `RateLimit`/`InvokeRateLimit` fields on `Thread.CreateService({...})`, or globally via `Channel.Configure({...})`. Calls over the limit are dropped silently (server-side, with a warning logged) — the client never even knows.
+- **`Channel.InvokeClient` timeout**: server-to-client `InvokeClient` calls give up after `Channel.InvokeClientTimeout` seconds (default 10) instead of hanging forever if the client is unresponsive or disconnects mid-call.
+
+There is currently **no** timeout on client-to-server `InvokeServer` calls (i.e. calling a `Client` Method from the client) — that's standard Roblox behavior, not something Thread adds protection for. If you need one, wrap the call: `Promise.new(function(resolve) resolve(MyService:SomeMethod()) end):timeout(5)`.
+
 ## Configuration
 
 ```lua
 Thread.Configure({
-    Debug = true, -- verbose [Thread]/[Channel] logging, off by default
-    HaltOnCriticalFailure = false,
+    Debug = true,                    -- verbose [Thread]/[Channel] logging to the output, off by default
+    HaltOnCriticalFailure = false,    -- see "Critical Services" above
+})
+
+Channel.Configure({
+    DefaultRateLimit = 60,
+    DefaultInvokeRateLimit = 30,
+    InvokeClientTimeout = 15,
+    WaitTimeout = 15,                 -- how long the client waits for server-created folders/Remotes to appear
 })
 ```
 
-## Low-Level Channel API (unchanged, still available)
+Call `Thread.Configure`/`Channel.Configure` once, early, before `Thread.Start()`. `Debug = true` is genuinely useful while developing — it prints every service registration, remote creation, and lifecycle step — but noisy in production, hence the `false` default.
 
-For quick one-off networking that doesn't need a full service `Client` table:
+## The Low-Level Channel API
+
+For quick, one-off networking that doesn't belong to any particular service's `Client` table — this is the original string-keyed API, and it still works exactly as it did in the original v1.1.1 project:
 
 ```lua
--- server
+-- Server
 Channel.On("PlayerJumped", function(player)
     print(player.Name, "jumped")
 end)
 
--- client
+-- Client
 Channel.FireServer("PlayerJumped")
 ```
 
-`Channel.FireClient`, `Channel.FireAll`, `Channel.SetFunction`, `Channel.InvokeServer`, `Channel.InvokeClient`, `Channel.Event`, `Channel.Function` all work exactly as in the original Wire v1.1.1.
+| Function | Direction | Description |
+|---|---|---|
+| `Channel.On(name, callback, rateLimit?)` | both | Listens for a `RemoteEvent`. Server callback gets `(player, ...)`; client callback gets `(...)`. |
+| `Channel.FireClient(name, player, ...)` | server → one client | |
+| `Channel.FireAll(name, ...)` | server → all clients | |
+| `Channel.FireServer(name, ...)` | client → server | |
+| `Channel.SetFunction(name, callback, rateLimit?)` | both | Sets up a `RemoteFunction` handler. |
+| `Channel.InvokeServer(name, ...)` | client → server | Yields for the return value. |
+| `Channel.InvokeClient(name, player, ...)` | server → client | Yields, with a timeout (see above). |
+| `Channel.Event(name)` / `Channel.Function(name)` | same-context only | Returns a raw `BindableEvent`/`BindableFunction`. Only useful for server↔server or client↔client communication — Bindables never cross the network boundary. |
 
-## Promise Extras
+Reach for the `Client` table approach first; use this low-level API when a full service `Client` entry feels like overkill for a single throwaway event.
 
-Beyond `andThen`/`catch`/`finally`/`await`/`all`/`allSettled`:
+## Promise — Complete Reference
+
+`Promise.luau` is a small, self-contained A+-ish implementation. It exists mainly so `Thread.Start()`/`Thread.OnStart()` have something to return, but it's a fully general-purpose async primitive you can use anywhere.
+
+### Instance methods (called on a promise you already have)
+
+| Method | Description |
+|---|---|
+| `promise:andThen(onResolve?, onReject?)` | Standard chaining. Returns a new promise. |
+| `promise:catch(onReject)` | Shorthand for `:andThen(nil, onReject)`. |
+| `promise:finally(callback)` | Runs `callback()` regardless of outcome, then passes the original result/error through. |
+| `promise:timeout(seconds, err?)` | Rejects if `promise` hasn't settled within `seconds`. Doesn't cancel the underlying work, just stops waiting for it. |
+| `promise:await()` | Yields the current thread until settled; returns the value or `error()`s with the rejection reason. Only call this from a thread that's safe to yield (i.e. not directly in certain Roblox callback contexts that disallow yielding). |
+| `promise:getState()` | Returns `"Pending"`, `"Resolved"`, or `"Rejected"`. |
+
+### Static constructors
+
+| Function | When to use it |
+|---|---|
+| `Promise.new(function(resolve, reject) ... end)` | Wrap any async operation manually. |
+| `Promise.resolve(value)` / `Promise.reject(err)` | Build an already-settled promise. |
+| `Promise.all({...})` | Every promise must succeed; one failure rejects the whole batch immediately. |
+| `Promise.allSettled({...})` | Run several things, never reject — get a per-entry `{Status, Value}`/`{Status, Error}` report. Good for "start everything, tell me what failed." |
+| `Promise.race({...})` | Settles with whichever promise finishes first (success or failure). |
+| `Promise.some({...}, count)` | Resolves once `count` of the promises have resolved; rejects if that becomes mathematically impossible. |
+| `Promise.delay(seconds)` | Resolves with no value after `seconds` — useful purely for chaining (`Promise.delay(1):andThen(...)`). |
+| `Promise.retry(fn, attempts)` | Calls `fn()` (must return a promise) up to `attempts` times, stopping at the first success. |
+| `Promise.fromEvent(signal, predicate?)` | Wraps any `RBXScriptSignal` (or a `Thread.Signal`) into a one-shot promise that resolves the next time it fires. Optional `predicate(...)` to filter which firings count. |
+| `Promise.is(value)` | `true` if `value` is a Promise instance. |
+
+### Common patterns
 
 ```lua
-local Promise = require(game.ReplicatedStorage.Packages.Promise)
-
--- First to settle wins:
-Promise.race({ promiseA, promiseB }):andThen(print)
-
--- Resolve once N of many resolve:
-Promise.some({ p1, p2, p3 }, 2):andThen(print)
-
--- Plain delay, useful in chains:
-Promise.delay(1):andThen(function() print("1 second later") end)
-
--- Retry a flaky operation:
+-- Retry a flaky DataStore call:
 Promise.retry(function()
     return Promise.new(function(resolve, reject)
         local ok, result = pcall(dataStore.GetAsync, dataStore, "key")
@@ -224,77 +455,252 @@ Promise.retry(function()
     end)
 end, 5):andThen(print):catch(warn)
 
--- Reject if it takes too long:
+-- Don't let a slow operation hang forever:
 someSlowPromise:timeout(5):catch(warn)
 
--- Wrap any signal-like object (RBXScriptSignal or Thread.Signal) into a Promise:
+-- Wait for the next CharacterAdded, as a promise instead of a callback:
 Promise.fromEvent(player.CharacterAdded):andThen(function(character)
     print(character.Name, "spawned")
 end)
 ```
 
-## Utilities (`Thread.Signal`, `Thread.Trove`, `Thread.TableUtil`, `Thread.Option`, `Thread.EnumList`)
+## Util Modules — Complete Reference
 
-Hand-written equivalents of the most commonly used [RbxUtil](https://github.com/Sleitnick/RbxUtil) modules — the same collection Knit itself depends on — each requirable standalone from `Packages/Util/`, or via `Thread.Signal` etc. after requiring `Thread`.
+Independent, requirable standalone from `Packages/Util/`, or via `Thread.Signal`/`Thread.Trove`/etc. after requiring `Thread`. None of them touch networking — they're general-purpose Lua/Roblox utilities, and behave identically on the server and the client.
+
+### `Signal`
+
+A fast, pure-Luau event class, independent of `BindableEvent`. Use this for in-process pub/sub between your own modules (server-only or client-only — it never crosses the network) — it's faster than `BindableEvent` and, unlike a Bindable, can carry any Lua value (functions, tables) as an argument.
 
 ```lua
-local Thread = require(game.ReplicatedStorage.Packages.Thread)
-
--- Signal: fast pub-sub, independent of BindableEvent
 local mySignal = Thread.Signal.new()
-mySignal:Connect(function(msg) print(msg) end)
-mySignal:Fire("hello")
+local connection = mySignal:Connect(function(msg) print(msg) end)
+mySignal:Fire("hello")           -- "hello" printed
+mySignal:Once(function() ... end) -- fires at most once, then auto-disconnects
+mySignal:Wait()                   -- yields the current thread until the next Fire
+mySignal:GetConnections()         -- array of every active connection
+connection.Connected              -- true, until :Disconnect()/:Destroy() is called on it
+connection:Disconnect()           -- connection:Destroy() is an identical alias
+mySignal:DisconnectAll()
+mySignal:Destroy()                -- disconnects everything, incl. any wrapped RBXScriptSignal
+Thread.Signal.Wrap(someRBXScriptSignal) -- adapts an engine signal to this same API
+Thread.Signal.Is(mySignal)        -- true - checks if a value is one of these Signal objects
+```
 
--- Trove: cleanup helper
+Internally this uses a pooled-coroutine linked-list design (the same well-known "GoodSignal" shape used across the Roblox ecosystem) so that firing a signal doesn't allocate a fresh coroutine per call — it's meant to be cheap enough to use liberally.
+
+### `Trove`
+
+A cleanup/janitor helper: track a bunch of "things that need cleaning up" and tear them all down with a single call, instead of manually writing out a dozen `:Destroy()`/`:Disconnect()` calls.
+
+```lua
 local trove = Thread.Trove.new()
-trove:Add(someInstance)
-trove:Connect(player.CharacterAdded, onCharacterAdded)
-trove:Destroy() -- destroys someInstance and disconnects the connection
 
--- TableUtil: table helpers
-local doubled = Thread.TableUtil.Map({ 1, 2, 3 }, function(n) return n * 2 end)
-local data = Thread.TableUtil.Reconcile(savedData, templateData)
+trove:Add(someInstance)                              -- cleaned up via :Destroy()
+trove:Connect(player.CharacterAdded, onCharacterAdded) -- shorthand for trove:Add(signal:Connect(fn))
+trove:Add(function() print("custom cleanup") end)      -- cleaned up by calling it
+trove:Add(someTable, "Cleanup")                        -- cleaned up via someTable:Cleanup() (custom method name)
+trove:Clone(somePart)                                  -- clones + tracks the clone
+trove:Construct(SomeClass, arg1, arg2)                  -- SomeClass.new(arg1, arg2), tracked
 
--- Option: explicit nil-handling
-local result = Thread.Option.Wrap(dataStore:GetAsync(key))
+trove:Remove(someInstance)  -- stop tracking it, without cleaning it up
+trove:Clean()               -- clean up everything tracked so far; trove stays reusable
+trove:Destroy()             -- same as :Clean() — the trove is done
+
+local sub = trove:Extend()  -- a nested Trove, auto-cleaned when the parent trove is
+trove:AttachToInstance(someInstance) -- auto :Destroy() the trove once someInstance is removed from the game
+```
+
+`Trove` figures out the right cleanup method automatically based on the value's type (`Destroy` for Instances, `Disconnect` for connections, calling functions directly, `task.cancel` for threads) — pass an explicit method name as the second argument to `:Add` only when the default guess is wrong.
+
+### `TableUtil`
+
+Table helper functions filling gaps in Lua's standard library. Except where noted, these return a **new** table rather than mutating the input.
+
+```lua
+TableUtil.Copy(tbl, deep?)             -- shallow by default; deep = true copies recursively
+TableUtil.Sync(src, template)          -- two-way: src ends up with EXACTLY template's keys (extras removed!)
+TableUtil.Reconcile(src, template)     -- one-way: adds missing keys, never removes anything (safe for save data)
+TableUtil.Lock(tbl)                    -- deep table.freeze, mutates in place
+
+TableUtil.SwapRemove(arrayTbl, i)             -- O(1) removal, doesn't preserve order
+TableUtil.SwapRemoveFirstValue(arrayTbl, v)
+TableUtil.Reverse(arrayTbl)
+TableUtil.Shuffle(arrayTbl, rng?)
+
+TableUtil.Map(tbl, function(value, key) return newValue end)
+TableUtil.Filter(tbl, function(value, key) return keepIt end)
+TableUtil.Reduce(tbl, function(acc, value, key) return newAcc end, initial)
+TableUtil.Find(tbl, function(value, key) return matches end)  -- returns value, key or nil, nil
+TableUtil.Every(tbl, fn)  -- true if fn(v,k) is true for ALL entries
+TableUtil.Some(tbl, fn)   -- true if fn(v,k) is true for ANY entry
+TableUtil.Keys(tbl)
+TableUtil.Values(tbl)
+TableUtil.IsEmpty(tbl)
+TableUtil.Length(tbl)     -- counts ALL keys (unlike #tbl, works for dictionaries too)
+```
+
+`Reconcile` is the one you want for player save data: old saved tables automatically gain new fields your template added, without losing data your template doesn't know about. `Sync` is stricter (two-way) and is meant for things like config tables where extra/stale keys genuinely should be removed.
+
+`Map`/`Filter`/`Reduce`/`Find`/`Every`/`Some`/`Keys`/`Values` all work over dictionaries by default. `Filter` specifically switches to array behavior (preserving order, compacting indices) whenever `#tbl > 0` — if a table has both an array part and separate string keys, only the array part gets filtered. Keep arrays and dictionaries as separate tables if you need to filter both.
+
+### `Option`
+
+A Rust-style `Option<T>`, for making "this might not have a value" explicit instead of silently passing `nil` around.
+
+```lua
+local result = Thread.Option.Wrap(dataStore:GetAsync(key)) -- Some(value) or None, based on nil-ness
+
 result:Match({
     Some = function(v) print("Got", v) end,
     None = function() print("Nothing stored") end,
 })
 
--- EnumList: custom, comparable enums
-local Direction = Thread.EnumList.new("Direction", { "North", "South", "East", "West" })
-print(Direction.North.Name, Direction.North.Value)
+result:IsSome() / result:IsNone()
+result:Unwrap()                 -- errors if None — use when you're SURE it's Some
+result:Expect("custom error")   -- errors with your message if None
+result:UnwrapOr(defaultValue)
+result:UnwrapOrElse(function() return computeDefault() end)
+result:Contains(value)          -- true if Some AND equal to value
+
+result:And(otherOption)         -- otherOption if Some, else None
+result:AndThen(function(v) return Thread.Option.Wrap(...) end) -- chain another Option-returning step
+result:Or(otherOption)          -- self if Some, else otherOption
+result:OrElse(function() return Thread.Option.Wrap(...) end)
+
+Thread.Option.Some(value)  -- errors if value is nil - use only when you already know it's non-nil
+Thread.Option.Is(obj)      -- true if obj is an Option
+Thread.Option.None         -- the shared "no value" singleton itself (not a function call) - Option.Wrap(nil) returns exactly this
 ```
+
+Use `Option` where a stray `nil` could realistically slip through unnoticed (DataStore reads, optional config lookups). For an obvious, immediately-checked `nil` (`if x then ... end` right after getting `x`), plain Lua is clearer — don't wrap everything just because you can.
+
+### `EnumList`
+
+Defines a custom enum with named, comparable, immutable members — Luau has no built-in way to do this yourself.
+
+```lua
+local Direction = Thread.EnumList.new("Direction", { "North", "South", "East", "West" })
+
+print(Direction.North.Name)   --> "North"
+print(Direction.North.Value)  --> 1 (position in the list, 1-indexed)
+
+Direction:BelongsTo(Direction.North)  --> true
+Direction:GetEnumItems()              --> array of all 4 items
+Direction:GetName()                   --> "Direction"
+Direction:FromName("South")           --> Direction.South
+Direction:FromValue(1)                --> Direction.North
+```
+
+Use this instead of raw strings whenever you have a fixed, known set of named states (game phases, directions, item rarities) — a typo in a raw string (`"Nort"`) fails silently; `Direction.Nort` fails immediately and loudly (nil-index).
+
+Both the `EnumList` itself and every individual item (`Direction.North`, etc.) are deep-frozen with `table.freeze` at creation time — you can't add members after the fact or mutate an item's `Name`/`Value`, which is what makes `==` comparisons between items reliable.
+
+## Server vs. Client Cheat Sheet
+
+The single most important thing to internalize: **the server and every client each run their own separate instance of `Thread`'s internal state** (`Thread._Register`, its own start `Promise`, etc.) — they are different Lua VMs entirely. Nothing about a service you create on the server is automatically visible to `Thread.GetService` on the client, or vice versa. `Channel` is the only bridge between the two.
+
+| I want to... | On the **server** | On the **client** |
+|---|---|---|
+| Define a service/controller | `Thread.CreateService({...})` | `Thread.CreateService({...})` (same call — informally called a "controller" here, but it's the identical API) |
+| Expose something to clients | Give the service a `Client = {...}` table | — (nothing to expose *from* the client to *other clients*) |
+| Get one of MY OWN registered services | `Thread.GetService("X")` | `Thread.GetService("X")` |
+| Get a **server** service's `Client` API | — (it already has direct access) | `Channel.BuildClient("X")` — **never** `Thread.GetService`, that only searches the client's own local registry |
+| Fire a signal | `self.Client.MySignal:Fire(player, ...)` / `:FireAll(...)` / `:FireExcept(p, ...)` | `proxy.MySignal:Fire(...)` (server infers the player automatically) |
+| Read/set a property | `:Get()` / `:Set(v)` / `:SetFor(p, v)` / `:GetFor(p)` / `:ClearFor(p)` | `:Get()` / `:Observe(fn)` only |
+
+A common mistake (and the exact error message you'll see if you hit it):
+
+```
+[Thread] No service named 'ArrestService' is registered
+```
+
+This means you called `Thread.GetService("ArrestService")` on the client, but `ArrestService` was only ever created on the **server**. Use `Channel.BuildClient("ArrestService")` instead — see the [Troubleshooting](#troubleshooting) section for more of these.
+
+## Exported Luau Types
+
+Every module is written under `--!strict` and exports its own types, so if your own code also uses `--!strict` (or just wants editor autocomplete), you can reference them directly off the required module:
+
+```lua
+local Thread = require(game:GetService("ReplicatedStorage").Packages.Thread)
+
+-- Type a service definition table explicitly:
+local def: Thread.ServiceDef = {
+    Name = "MoneyService",
+    Client = { ... },
+}
+
+local MoneyService = Thread.CreateService(def)
+```
+
+| Type | From | Shape |
+|---|---|---|
+| `Thread.ServiceDef` / `Thread.Service` | `Thread` | The table shape accepted by `Thread.CreateService`: `Name`, `Client?`, `Dependencies?`, `Middleware?`, `Critical?`, `RateLimit?`, `InvokeRateLimit?`, `ThreadInit?`, `ThreadStart?`, plus any of your own fields/methods. |
+| `Thread.RegisterResult` | `Thread` | One entry of what `Thread.Register(...)` returns: `{ Module: ModuleScript, Success: boolean, Result: any, Error: any }`. |
+| `Thread.Middleware` | `Thread` (re-exported from `Channel`) | `{ Inbound: MiddlewareList?, Outbound: MiddlewareList? }`. |
+| `Channel.MiddlewareFn` | `Channel` | `(player: Player, args: {any}) -> boolean` — the shape a single middleware function must match. |
+| `Channel.WrapOptions` | `Channel` | What `Channel.WrapService`'s third argument accepts: `{ Middleware?, RateLimit?, InvokeRateLimit? }`. |
+| `Promise.Promise<T>` | `Promise` | The Promise type itself, if you want to type a function as returning one: `function fetchData(): Promise.Promise<string>`. |
+| `Signal.Signal` / `Signal.Connection` | `Util/Signal` | The Util Signal's own types. |
+| `Trove.Trackable` / `Trove.SignalLike` | `Util/Trove` | What kinds of values `Trove:Add`/`:Connect` accept. |
+| `Option.Option<T>` / `Option.MatchTable<T>` | `Util/Option` | The Option type and the shape `:Match({...})` expects. |
+| `EnumList.EnumList` / `EnumList.EnumItem` | `Util/EnumList` | The EnumList type and the shape of one of its items. |
+
+You'll rarely need most of these explicitly — Luau infers types from the values you pass in most of the time — but they're there for the cases where you want to annotate a variable ahead of assigning it, or write a helper function that accepts/returns one of these.
 
 ## Testing
 
-There's a small, dependency-free test runner under `Tests/` (no TestEZ, no Wally):
+A tiny, dependency-free test runner lives under `Tests/` (no TestEZ, no Wally — just `pcall` + `assert`).
 
-1. Copy the `Thread/` and `Tests/` folders into your Rojo project (or Studio, as siblings) so `Tests/Thread.spec.luau` can reach `../Packages`.
-2. In Studio, start a Play/Test session (so `RunService:IsServer()` is server-true) and paste into the Command Bar:
+1. Copy the `Thread/` and `Tests/` folders into your Rojo project (or Studio, as siblings), so `Tests/Thread.spec.luau` can reach `../Packages`.
+2. Start a Play/Test session in Studio (so `RunService:IsServer()` evaluates as true — some tests are server-only), then paste into the Command Bar:
    ```lua
    require(game.ServerScriptService.Tests["Thread.spec"])
    ```
    (adjust the path to wherever you placed `Tests/`)
-3. Read the Output window — `[PASS]` / `[FAIL]` per test, with a summary line at the end.
+3. Read the Output window — `[PASS]`/`[FAIL]` per test case, with a summary line at the end.
 
-## API Reference
+The suite covers: Promise (including all the extras), dependency ordering and circular-dependency detection, `Thread.Register`, `Channel.WrapService`/`BuildClient`/`Destroy`, per-player Property overrides, and every Util module.
 
-### Thread
+## Troubleshooting
+
+**`No service named 'X' is registered` (thrown by `Thread.GetService`)**
+You're calling `Thread.GetService` for a service that isn't registered *on that side*. If `X` is a server-only service and you're on the client, use `Channel.BuildClient("X")` instead. If it's the same side, make sure the module was actually required (check `Thread.Register`'s folder path and its returned report for a `Success = false` entry).
+
+**`'<Name>' (<Class>) does not exist after waiting <N>s. Did the server register it?` / `Service '<Name>' was never wired by the server`**
+The client is waiting for a Remote/service marker the server never created. Usually means: the server's `Thread.Start()` hasn't run yet (race condition — make sure your client code waits on `Thread.OnStart()` before calling `Channel.BuildClient`), the service name is misspelled, or the service genuinely has no `Client` table on the server.
+
+**`Thread.Register expects an Instance (folder)` / similar type-assert errors**
+These are intentional `assert()`s catching a wrong argument type immediately, rather than failing mysteriously later. Read the message — it names exactly what was expected.
+
+**A critical service's failure didn't crash my script**
+That's the default, intentional behavior since v1.0.0's rewrite (previously it hard-`error()`ed). Handle it via `Thread.Start():catch(...)`, or opt back into the old behavior with `Thread.Configure({ HaltOnCriticalFailure = true })`.
+
+**Rate limit warnings in the output (`Rate limit exceeded: ...`)**
+A player is calling a Method/Signal faster than the configured limit (default 20-30/sec) — either legitimate rapid input (raise the limit for that specific service via `RateLimit`/`InvokeRateLimit`) or exploit/spam attempts (leave it, that's the protection working as intended).
+
+**Duplicate service name error**
+Two different `ModuleScript`s called `Thread.CreateService({ Name = "X" })` with the same name — service names must be unique per side. Rename one, or check you're not accidentally requiring the same module twice via two different registration folders.
+
+## Full API Reference Tables
+
+### `Thread`
 | Function | Description |
 |---|---|
 | `Thread.CreateService(def)` | Registers a service. `def` may include `Client`, `Dependencies`, `Middleware`, `Critical`, `RateLimit`, `InvokeRateLimit`, `ThreadInit`, `ThreadStart`. |
-| `Thread.GetService(name)` | Returns a registered service or errors. |
+| `Thread.GetService(name)` | Returns a registered service (from this side's registry) or errors. |
 | `Thread.GetServices()` | Returns a copy of the full service registry. |
 | `Thread.Unregister(name)` | Removes a service before `Start()`. |
 | `Thread.Register(folder, recursive?)` | Requires every `ModuleScript` under `folder`; returns `{ Module, Success, Result, Error }[]`. |
 | `Thread.Start()` | Binds Client remotes, runs `ThreadInit` then `ThreadStart` in dependency order. Returns the start `Promise`. |
-| `Thread.OnStart()` | Returns the start `Promise` (resolves/rejects once, safe to call any time). |
+| `Thread.OnStart()` | Returns the start `Promise` (resolves/rejects once, safe to call any time, from anywhere). |
 | `Thread.Configure({ Debug, HaltOnCriticalFailure })` | Central configuration. |
 | `Thread.CreateSignal()` / `Thread.CreateUnreliableSignal()` / `Thread.CreateProperty(v)` | Markers for use inside a service's `Client` table. |
+| `Thread.Version` | Current version string. |
+| `Thread.Channel` | Direct access to the `Channel` module. |
+| `Thread.Signal` / `.Trove` / `.TableUtil` / `.Option` / `.EnumList` | Direct access to the Util modules. |
 
-### Channel
+### `Channel`
 | Function | Description |
 |---|---|
 | `Channel.WrapService(name, clientTable, opts?)` | Server-only. Binds a `Client` table to real Remotes. Called automatically by `Thread.Start()` for services with a `Client` field. |
@@ -303,7 +709,7 @@ There's a small, dependency-free test runner under `Tests/` (no TestEZ, no Wally
 | `Channel.On/FireClient/FireAll/FireServer/SetFunction/InvokeServer/InvokeClient/Event/Function` | Low-level, string-keyed API (unchanged from v1.x). |
 | `Channel.Configure({...})` | Bulk-set `Channel.Debug`, `Channel.DefaultRateLimit`, etc. |
 
-### Property (returned in place of a `Thread.CreateProperty()` marker)
+### `Property` (returned in place of a `Thread.CreateProperty()` marker)
 | Method | Where | Description |
 |---|---|---|
 | `:Get()` | both | Client: last received value. Server: the shared default. |
@@ -312,17 +718,23 @@ There's a small, dependency-free test runner under `Tests/` (no TestEZ, no Wally
 | `:GetFor(player)` | server | Reads `player`'s override, or the default if none. |
 | `:ClearFor(player)` | server | Removes `player`'s override. |
 | `:Observe(fn)` | client | Calls `fn` immediately and on every change; returns a `{Disconnect}` handle. |
+| `:Destroy()` | server | Disconnects the internal `PlayerRemoving` connection. Rarely called directly — `Channel.Destroy(serviceName)` handles teardown for you. |
 
-### Promise
-Standard `andThen` / `catch` / `finally` / `await` / `getState`, plus: `Promise.resolve`, `Promise.reject`, `Promise.all`, `Promise.allSettled`, `Promise.race`, `Promise.some(promises, count)`, `Promise.delay(seconds)`, `Promise.retry(fn, attempts)`, `Promise.fromEvent(signal, predicate?)`, and the instance method `Promise:timeout(seconds, err?)`.
+### `Signal` (the service-scoped, Remote-backed version returned in `Client` tables)
+| Method | Where | Description |
+|---|---|---|
+| `:Fire(...)` | server: `:Fire(player, ...)` to one client. client: `:Fire(...)` to the server. |
+| `:FireAll(...)` | server | To every client. |
+| `:FireExcept(player, ...)` | server | To every client except `player`. |
+| `:Connect(fn)` | both | Server handler gets `(player, ...)`; client handler gets `(...)`. |
+| `:Destroy()` | both | Disconnects/destroys the underlying Remote. |
+
+Note: this is a different `Signal` class from the standalone `Util/Signal.luau` described above — same name, but one is Remote-backed (this one) and the other is pure in-process pub/sub. They're not interchangeable.
+
+### `Promise`
+See [Promise — Complete Reference](#promise--complete-reference) above for the full, annotated list.
 
 ### Util modules (`Packages/Util/`, also on `Thread.*`)
-| Module | Highlights |
-|---|---|
-| `Signal` | `.new()`, `.Wrap(rbxSignal)`, `.Is(obj)`, `:Connect`, `:Once`, `:Fire`, `:Wait`, `:DisconnectAll`, `:GetConnections`, `:Destroy` |
-| `Trove` | `.new()`, `:Add`, `:Remove`, `:Connect`, `:Clone`, `:Construct`, `:Clean`, `:Destroy`, `:Extend`, `:AttachToInstance` |
-| `TableUtil` | `Copy`, `Sync`, `Reconcile`, `Lock`, `SwapRemove`, `SwapRemoveFirstValue`, `Reverse`, `Shuffle`, `Map`, `Filter`, `Reduce`, `Find`, `Every`, `Some`, `Keys`, `Values`, `IsEmpty`, `Length` |
-| `Option` | `Some`, `Wrap`, `None`, `Is`, `:Match`, `:Unwrap`, `:Expect`, `:UnwrapOr`, `:UnwrapOrElse`, `:And`, `:AndThen`, `:Or`, `:OrElse`, `:Contains` |
-| `EnumList` | `.new(name, {...})`, `:BelongsTo`, `:GetEnumItems`, `:GetName`, `:FromName`, `:FromValue` |
+See [Util Modules — Complete Reference](#util-modules--complete-reference) above for the full, annotated list.
 
-See [CHANGELOG.md](CHANGELOG.md) for the full list of changes versus the original v1.1.1.
+See [CHANGELOG.md](CHANGELOG.md) for the version history.
