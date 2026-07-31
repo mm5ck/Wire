@@ -1,14 +1,14 @@
 --!strict
 
-local Wire = {}
+local Thread = {}
 
 --------------------------------------------------
 -- Types
 --------------------------------------------------
 
-local Comm = require(script.Parent.Comm)
+local Channel = require(script.Parent.Channel)
 
-export type Middleware = Comm.Middleware
+export type Middleware = Channel.Middleware
 
 export type ServiceDef = {
 	Name: string,
@@ -18,8 +18,8 @@ export type ServiceDef = {
 	Critical: boolean?,
 	RateLimit: number?,
 	InvokeRateLimit: number?,
-	WireInit: ((self: any) -> ())?,
-	WireStart: ((self: any) -> ())?,
+	ThreadInit: ((self: any) -> ())?,
+	ThreadStart: ((self: any) -> ())?,
 	[any]: any,
 }
 
@@ -36,13 +36,13 @@ export type RegisterResult = {
 -- State
 --------------------------------------------------
 
-Wire.Version = "2.0.0"
-Wire.Debug = false
-Wire.HaltOnCriticalFailure = false -- if true, a critical service failure hard-errors instead of just rejecting the start Promise
+Thread.Version = "2.1.0"
+Thread.Debug = false
+Thread.HaltOnCriticalFailure = false -- if true, a critical service failure hard-errors instead of just rejecting the start Promise
 
-Wire._Register = {} :: { [string]: Service }
-Wire._Started = false
-Wire._StartResolved = false
+Thread._Register = {} :: { [string]: Service }
+Thread._Started = false
+Thread._StartResolved = false
 
 --------------------------------------------------
 -- Promise
@@ -51,8 +51,8 @@ Wire._StartResolved = false
 local Promise = require(script.Parent.Promise)
 
 local StartPromise = Promise.new(function(resolve, reject)
-	Wire._ResolveStart = resolve
-	Wire._RejectStart = reject
+	Thread._ResolveStart = resolve
+	Thread._RejectStart = reject
 end)
 
 --------------------------------------------------
@@ -60,50 +60,62 @@ end)
 --------------------------------------------------
 
 local function Log(...)
-	if Wire.Debug then
-		print("[Wire]", ...)
+	if Thread.Debug then
+		print("[Thread]", ...)
 	end
 end
 
 local function Warn(...)
-	warn("[Wire]", ...)
+	warn("[Thread]", ...)
 end
 
 --------------------------------------------------
 -- Configuration
 --------------------------------------------------
 
-function Wire.Configure(config: { Debug: boolean?, HaltOnCriticalFailure: boolean? })
-	assert(type(config) == "table", "Wire.Configure expects a table")
+function Thread.Configure(config: { Debug: boolean?, HaltOnCriticalFailure: boolean? })
+	assert(type(config) == "table", "Thread.Configure expects a table")
 
 	if config.Debug ~= nil then
-		Wire.Debug = config.Debug
-		Wire.Comm.Debug = config.Debug
+		Thread.Debug = config.Debug
+		Thread.Channel.Debug = config.Debug
 	end
 
 	if config.HaltOnCriticalFailure ~= nil then
-		Wire.HaltOnCriticalFailure = config.HaltOnCriticalFailure
+		Thread.HaltOnCriticalFailure = config.HaltOnCriticalFailure
 	end
 end
 
 --------------------------------------------------
--- Comm
+-- Channel
 --------------------------------------------------
 
-Wire.Comm = Comm
+Thread.Channel = Channel
 
-Wire.CreateSignal = Comm.CreateSignal
-Wire.CreateUnreliableSignal = Comm.CreateUnreliableSignal
-Wire.CreateProperty = Comm.CreateProperty
+Thread.CreateSignal = Channel.CreateSignal
+Thread.CreateUnreliableSignal = Channel.CreateUnreliableSignal
+Thread.CreateProperty = Channel.CreateProperty
 
-Log("Comm loaded")
+Log("Channel loaded")
+
+--------------------------------------------------
+-- Utilities
+--------------------------------------------------
+-- Standalone helpers bundled alongside Thread (each also requirable on its
+-- own from Packages/Util/, with zero dependency on Thread itself).
+
+Thread.Signal = require(script.Parent.Util.Signal)
+Thread.Trove = require(script.Parent.Util.Trove)
+Thread.TableUtil = require(script.Parent.Util.TableUtil)
+Thread.Option = require(script.Parent.Util.Option)
+Thread.EnumList = require(script.Parent.Util.EnumList)
 
 --------------------------------------------------
 -- Service Creation
 --------------------------------------------------
 
-function Wire.CreateService(service: ServiceDef): Service
-	assert(type(service) == "table", "Wire.CreateService expects a table")
+function Thread.CreateService(service: ServiceDef): Service
+	assert(type(service) == "table", "Thread.CreateService expects a table")
 	assert(type(service.Name) == "string", "Service requires a Name")
 	assert(#service.Name > 0, "Service.Name must be a non-empty string")
 
@@ -115,11 +127,11 @@ function Wire.CreateService(service: ServiceDef): Service
 		assert(type(service.Dependencies) == "table", "Service.Dependencies must be a table of service names")
 	end
 
-	if Wire._Register[service.Name] then
-		error(("[Wire] Duplicate service name: '%s' is already registered"):format(service.Name), 0)
+	if Thread._Register[service.Name] then
+		error(("[Thread] Duplicate service name: '%s' is already registered"):format(service.Name), 0)
 	end
 
-	Wire._Register[service.Name] = service
+	Thread._Register[service.Name] = service
 
 	Log("Registered service:", service.Name)
 
@@ -130,32 +142,32 @@ end
 -- Service Access
 --------------------------------------------------
 
-function Wire.GetService(name: string): Service
-	assert(type(name) == "string", "Wire.GetService expects a string")
+function Thread.GetService(name: string): Service
+	assert(type(name) == "string", "Thread.GetService expects a string")
 
-	local service = Wire._Register[name]
+	local service = Thread._Register[name]
 
-	assert(service ~= nil, ("[Wire] No service named '%s' is registered"):format(name))
+	assert(service ~= nil, ("[Thread] No service named '%s' is registered"):format(name))
 
 	return service
 end
 
 -- Returns a shallow copy of every registered service, keyed by name.
-function Wire.GetServices(): { [string]: Service }
+function Thread.GetServices(): { [string]: Service }
 	local copy = {}
-	for name, service in pairs(Wire._Register) do
+	for name, service in pairs(Thread._Register) do
 		copy[name] = service
 	end
 	return copy
 end
 
--- Removes a registered service. Only valid before Wire.Start().
-function Wire.Unregister(name: string): boolean
-	assert(type(name) == "string", "Wire.Unregister expects a string")
-	assert(not Wire._Started, "Cannot unregister after Wire.Start()")
+-- Removes a registered service. Only valid before Thread.Start().
+function Thread.Unregister(name: string): boolean
+	assert(type(name) == "string", "Thread.Unregister expects a string")
+	assert(not Thread._Started, "Cannot unregister after Thread.Start()")
 
-	if Wire._Register[name] then
-		Wire._Register[name] = nil
+	if Thread._Register[name] then
+		Thread._Register[name] = nil
 		Log("Unregistered service:", name)
 		return true
 	end
@@ -167,9 +179,9 @@ end
 -- Register Modules
 --------------------------------------------------
 
-function Wire.Register(folder: Instance, recursive: boolean?): { RegisterResult }
-	assert(typeof(folder) == "Instance", "Wire.Register expects an Instance (folder)")
-	assert(not Wire._Started, "Cannot register after Wire.Start()")
+function Thread.Register(folder: Instance, recursive: boolean?): { RegisterResult }
+	assert(typeof(folder) == "Instance", "Thread.Register expects an Instance (folder)")
+	assert(not Thread._Started, "Cannot register after Thread.Start()")
 
 	Log("Registering folder:", folder:GetFullName())
 
@@ -274,43 +286,43 @@ end
 --------------------------------------------------
 
 local function Fail(message: string)
-	if not Wire._StartResolved then
-		Wire._StartResolved = true
-		Wire._RejectStart(message)
+	if not Thread._StartResolved then
+		Thread._StartResolved = true
+		Thread._RejectStart(message)
 	end
 
-	if Wire.HaltOnCriticalFailure then
-		error("[Wire] " .. message, 0)
+	if Thread.HaltOnCriticalFailure then
+		error("[Thread] " .. message, 0)
 	else
 		Warn(message)
 	end
 
-	return Wire.OnStart()
+	return Thread.OnStart()
 end
 
-function Wire.Start()
-	if Wire._Started then
+function Thread.Start()
+	if Thread._Started then
 		Warn("Start called twice")
-		return Wire.OnStart()
+		return Thread.OnStart()
 	end
 
-	Wire._Started = true
+	Thread._Started = true
 
 	local amount = 0
-	for _ in pairs(Wire._Register) do
+	for _ in pairs(Thread._Register) do
 		amount += 1
 	end
 
 	if amount == 0 then
 		Warn("No services registered")
 
-		Wire._ResolveStart(Wire)
-		Wire._StartResolved = true
+		Thread._ResolveStart(Thread)
+		Thread._StartResolved = true
 
-		return Wire.OnStart()
+		return Thread.OnStart()
 	end
 
-	local order, depErr = TopoSort(Wire._Register)
+	local order, depErr = TopoSort(Thread._Register)
 
 	if not order then
 		return Fail("Dependency resolution failed: " .. (depErr :: string))
@@ -320,14 +332,14 @@ function Wire.Start()
 
 	--------------------------------------------------
 	-- Bind Client remotes (before Init, so services can
-	-- use their own Signals/Properties inside WireInit)
+	-- use their own Signals/Properties inside ThreadInit)
 	--------------------------------------------------
 
 	for _, name in ipairs(order) do
-		local service = Wire._Register[name]
+		local service = Thread._Register[name]
 
 		if type(service.Client) == "table" then
-			local ok, err = pcall(Comm.WrapService, name, service.Client, {
+			local ok, err = pcall(Channel.WrapService, name, service.Client, {
 				Middleware = service.Middleware,
 				RateLimit = service.RateLimit,
 				InvokeRateLimit = service.InvokeRateLimit,
@@ -348,13 +360,13 @@ function Wire.Start()
 	local initialized = 0
 
 	for _, name in ipairs(order) do
-		local service = Wire._Register[name]
+		local service = Thread._Register[name]
 
-		if type(service.WireInit) == "function" then
+		if type(service.ThreadInit) == "function" then
 			Log("Initializing:", name)
 
 			local success, err = xpcall(function()
-				service:WireInit()
+				service:ThreadInit()
 			end, debug.traceback)
 
 			if success then
@@ -364,7 +376,7 @@ function Wire.Start()
 				Warn("Init failed:", name, err)
 
 				if service.Critical and not criticalFailure then
-					criticalFailure = ("Critical service '%s' failed WireInit: %s"):format(name, tostring(err))
+					criticalFailure = ("Critical service '%s' failed ThreadInit: %s"):format(name, tostring(err))
 				end
 			end
 		end
@@ -383,13 +395,13 @@ function Wire.Start()
 	local started = 0
 
 	for _, name in ipairs(order) do
-		local service = Wire._Register[name]
+		local service = Thread._Register[name]
 
-		if type(service.WireStart) == "function" then
+		if type(service.ThreadStart) == "function" then
 			Log("Starting:", name)
 
 			local success, err = xpcall(function()
-				service:WireStart()
+				service:ThreadStart()
 			end, debug.traceback)
 
 			if success then
@@ -399,7 +411,7 @@ function Wire.Start()
 				Warn("Start failed:", name, err)
 
 				if service.Critical and not criticalFailure then
-					criticalFailure = ("Critical service '%s' failed WireStart: %s"):format(name, tostring(err))
+					criticalFailure = ("Critical service '%s' failed ThreadStart: %s"):format(name, tostring(err))
 				end
 			end
 		end
@@ -411,22 +423,22 @@ function Wire.Start()
 		return Fail(criticalFailure)
 	end
 
-	Log("Wire startup complete ✓")
+	Log("Thread startup complete ✓")
 
-	if not Wire._StartResolved then
-		Wire._StartResolved = true
-		Wire._ResolveStart(Wire)
+	if not Thread._StartResolved then
+		Thread._StartResolved = true
+		Thread._ResolveStart(Thread)
 	end
 
-	return Wire.OnStart()
+	return Thread.OnStart()
 end
 
 --------------------------------------------------
 -- Await Startup
 --------------------------------------------------
 
-function Wire.OnStart()
+function Thread.OnStart()
 	return StartPromise
 end
 
-return Wire
+return Thread

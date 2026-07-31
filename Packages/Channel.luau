@@ -1,14 +1,14 @@
 --!strict
 --[[
-	Comm - networking layer for Wire.
+	Channel - networking layer for Thread.
 
 	Two APIs are exposed:
 
 	1. Low-level (unchanged from v1.x, fully backwards compatible):
-	   Comm.On / FireClient / FireAll / FireServer / SetFunction /
+	   Channel.On / FireClient / FireAll / FireServer / SetFunction /
 	   InvokeServer / InvokeClient / Event / Function
 
-	2. Service-scoped (new): Comm.WrapService (server) + Comm.BuildClient
+	2. Service-scoped (new): Channel.WrapService (server) + Channel.BuildClient
 	   (client) let a service expose a typed `Client` table (methods,
 	   Signals, Properties) the same way it's called - no more manually
 	   matching string names between server and client.
@@ -18,13 +18,13 @@
 	UnreliableRemoteEvent).
 ]]
 
-local Comm = {}
+local Channel = {}
 
-Comm.Debug = false
-Comm.DefaultRateLimit = 30 -- max calls / second / player / remote for Signals & Comm.On
-Comm.DefaultInvokeRateLimit = 20 -- max calls / second / player / remote for Methods & Comm.SetFunction
-Comm.InvokeClientTimeout = 10 -- seconds before Comm.InvokeClient gives up
-Comm.WaitTimeout = 10 -- seconds before any WaitForChild gives up
+Channel.Debug = false
+Channel.DefaultRateLimit = 30 -- max calls / second / player / remote for Signals & Channel.On
+Channel.DefaultInvokeRateLimit = 20 -- max calls / second / player / remote for Methods & Channel.SetFunction
+Channel.InvokeClientTimeout = 10 -- seconds before Channel.InvokeClient gives up
+Channel.WaitTimeout = 10 -- seconds before any WaitForChild gives up
 
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -54,20 +54,20 @@ export type WrapOptions = {
 --------------------------------------------------
 
 local function Log(...)
-	if Comm.Debug then
-		print("[Comm]", ...)
+	if Channel.Debug then
+		print("[Channel]", ...)
 	end
 end
 
 local function Warn(...)
-	warn("[Comm]", ...)
+	warn("[Channel]", ...)
 end
 
-function Comm.Configure(config: { [string]: any })
-	assert(type(config) == "table", "Comm.Configure expects a table")
+function Channel.Configure(config: { [string]: any })
+	assert(type(config) == "table", "Channel.Configure expects a table")
 	for key, value in pairs(config) do
-		if Comm[key] ~= nil then
-			Comm[key] = value
+		if Channel[key] ~= nil then
+			Channel[key] = value
 		end
 	end
 end
@@ -153,14 +153,14 @@ local function GetOrCreateFolder(parent: Instance, name: string): Instance
 		return folder
 	end
 
-	folder = parent:WaitForChild(name, Comm.WaitTimeout)
+	folder = parent:WaitForChild(name, Channel.WaitTimeout)
 
 	if not folder then
 		error(
-			("[Comm] '%s' never appeared under '%s' (timed out after %ds). Make sure the server requires Wire before any client Comm calls."):format(
+			("[Channel] '%s' never appeared under '%s' (timed out after %ds). Make sure the server requires Thread before any client Channel calls."):format(
 				name,
 				parent:GetFullName(),
-				Comm.WaitTimeout
+				Channel.WaitTimeout
 			),
 			0
 		)
@@ -169,7 +169,7 @@ local function GetOrCreateFolder(parent: Instance, name: string): Instance
 	return folder
 end
 
-local Root = GetOrCreateFolder(ReplicatedStorage, "WireComm")
+local Root = GetOrCreateFolder(ReplicatedStorage, "ThreadChannel")
 
 local Cache: { [string]: Instance } = {}
 local Containers: { [string]: Instance } = {}
@@ -202,8 +202,8 @@ end
 --------------------------------------------------
 
 local function Get(class: string, name: string, namespace: string?): Instance
-	assert(type(class) == "string", "[Comm] class must be a string")
-	assert(type(name) == "string", "[Comm] name must be a string")
+	assert(type(class) == "string", "[Channel] class must be a string")
+	assert(type(name) == "string", "[Channel] name must be a string")
 
 	local cacheKey = namespace and (class .. "\1" .. namespace .. "\1" .. name) or (class .. "\1" .. name)
 
@@ -224,14 +224,14 @@ local function Get(class: string, name: string, namespace: string?): Instance
 
 			Log("Created:", class, namespace and (namespace .. "." .. name) or name)
 		else
-			object = container:WaitForChild(name, Comm.WaitTimeout)
+			object = container:WaitForChild(name, Channel.WaitTimeout)
 
 			if not object then
 				error(
-					("[Comm] '%s' (%s) does not exist after waiting %ds. Did the server register it?"):format(
+					("[Channel] '%s' (%s) does not exist after waiting %ds. Did the server register it?"):format(
 						name,
 						class,
-						Comm.WaitTimeout
+						Channel.WaitTimeout
 					),
 					0
 				)
@@ -248,12 +248,12 @@ end
 -- Low-level: Remote Events
 --------------------------------------------------
 
-function Comm.On(name: string, callback: (...any) -> (), rateLimit: number?)
-	assert(type(name) == "string", "Comm.On: name must be a string")
-	assert(type(callback) == "function", "Comm.On: callback must be a function")
+function Channel.On(name: string, callback: (...any) -> (), rateLimit: number?)
+	assert(type(name) == "string", "Channel.On: name must be a string")
+	assert(type(callback) == "function", "Channel.On: callback must be a function")
 
 	local remote = Get("RemoteEvent", name) :: RemoteEvent
-	rateLimit = rateLimit or Comm.DefaultRateLimit
+	rateLimit = rateLimit or Channel.DefaultRateLimit
 
 	Log("Connected:", name)
 
@@ -280,10 +280,10 @@ function Comm.On(name: string, callback: (...any) -> (), rateLimit: number?)
 	end
 end
 
-function Comm.FireClient(name: string, player: Player, ...: any)
+function Channel.FireClient(name: string, player: Player, ...: any)
 	assert(IsServer, "FireClient only server")
-	assert(type(name) == "string", "Comm.FireClient: name must be a string")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "Comm.FireClient: player must be a Player")
+	assert(type(name) == "string", "Channel.FireClient: name must be a string")
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "Channel.FireClient: player must be a Player")
 
 	Log("FireClient:", name, player.Name)
 
@@ -297,9 +297,9 @@ function Comm.FireClient(name: string, player: Player, ...: any)
 	end
 end
 
-function Comm.FireAll(name: string, ...: any)
+function Channel.FireAll(name: string, ...: any)
 	assert(IsServer, "FireAll only server")
-	assert(type(name) == "string", "Comm.FireAll: name must be a string")
+	assert(type(name) == "string", "Channel.FireAll: name must be a string")
 
 	Log("FireAll:", name)
 
@@ -313,9 +313,9 @@ function Comm.FireAll(name: string, ...: any)
 	end
 end
 
-function Comm.FireServer(name: string, ...: any)
+function Channel.FireServer(name: string, ...: any)
 	assert(not IsServer, "FireServer only client")
-	assert(type(name) == "string", "Comm.FireServer: name must be a string")
+	assert(type(name) == "string", "Channel.FireServer: name must be a string")
 
 	Log("FireServer:", name)
 
@@ -333,12 +333,12 @@ end
 -- Low-level: Remote Functions
 --------------------------------------------------
 
-function Comm.SetFunction(name: string, callback: (...any) -> any, rateLimit: number?)
-	assert(type(name) == "string", "Comm.SetFunction: name must be a string")
-	assert(type(callback) == "function", "Comm.SetFunction: callback must be a function")
+function Channel.SetFunction(name: string, callback: (...any) -> any, rateLimit: number?)
+	assert(type(name) == "string", "Channel.SetFunction: name must be a string")
+	assert(type(callback) == "function", "Channel.SetFunction: callback must be a function")
 
 	local remote = Get("RemoteFunction", name) :: RemoteFunction
-	rateLimit = rateLimit or Comm.DefaultInvokeRateLimit
+	rateLimit = rateLimit or Channel.DefaultInvokeRateLimit
 
 	Log("Set function:", name)
 
@@ -371,19 +371,19 @@ function Comm.SetFunction(name: string, callback: (...any) -> any, rateLimit: nu
 	end
 end
 
-function Comm.InvokeServer(name: string, ...: any): any
+function Channel.InvokeServer(name: string, ...: any): any
 	assert(not IsServer, "InvokeServer only client")
-	assert(type(name) == "string", "Comm.InvokeServer: name must be a string")
+	assert(type(name) == "string", "Channel.InvokeServer: name must be a string")
 
 	Log("InvokeServer:", name)
 
 	return (Get("RemoteFunction", name) :: RemoteFunction):InvokeServer(...)
 end
 
-function Comm.InvokeClient(name: string, player: Player, ...: any): any
+function Channel.InvokeClient(name: string, player: Player, ...: any): any
 	assert(IsServer, "InvokeClient only server")
-	assert(type(name) == "string", "Comm.InvokeClient: name must be a string")
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "Comm.InvokeClient: player must be a Player")
+	assert(type(name) == "string", "Channel.InvokeClient: name must be a string")
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "Channel.InvokeClient: player must be a Player")
 
 	local remote = Get("RemoteFunction", name) :: RemoteFunction
 	local args = { ... }
@@ -406,7 +406,7 @@ function Comm.InvokeClient(name: string, player: Player, ...: any): any
 		task.spawn(thread, success, result)
 	end)
 
-	task.delay(Comm.InvokeClientTimeout, function()
+	task.delay(Channel.InvokeClientTimeout, function()
 		if settled then
 			return
 		end
@@ -415,7 +415,7 @@ function Comm.InvokeClient(name: string, player: Player, ...: any): any
 		task.spawn(
 			thread,
 			false,
-			("InvokeClient '%s' to %s timed out after %ds"):format(name, player.Name, Comm.InvokeClientTimeout)
+			("InvokeClient '%s' to %s timed out after %ds"):format(name, player.Name, Channel.InvokeClientTimeout)
 		)
 	end)
 
@@ -433,14 +433,14 @@ end
 -- Low-level: Bindables
 --------------------------------------------------
 
-function Comm.Event(name: string): BindableEvent
-	assert(type(name) == "string", "Comm.Event: name must be a string")
+function Channel.Event(name: string): BindableEvent
+	assert(type(name) == "string", "Channel.Event: name must be a string")
 	Log("BindableEvent:", name)
 	return Get("BindableEvent", name) :: BindableEvent
 end
 
-function Comm.Function(name: string): BindableFunction
-	assert(type(name) == "string", "Comm.Function: name must be a string")
+function Channel.Function(name: string): BindableFunction
+	assert(type(name) == "string", "Channel.Function: name must be a string")
 	Log("BindableFunction:", name)
 	return Get("BindableFunction", name) :: BindableFunction
 end
@@ -464,15 +464,15 @@ local PROPERTY_MARKER = newproxy(true)
 	return "PROPERTY_MARKER"
 end
 
-function Comm.CreateSignal()
+function Channel.CreateSignal()
 	return SIGNAL_MARKER
 end
 
-function Comm.CreateUnreliableSignal()
+function Channel.CreateUnreliableSignal()
 	return UNRELIABLE_SIGNAL_MARKER
 end
 
-function Comm.CreateProperty(initialValue: any)
+function Channel.CreateProperty(initialValue: any)
 	return { PROPERTY_MARKER, initialValue }
 end
 
@@ -487,7 +487,7 @@ function Signal.new(remote: RemoteEvent | UnreliableRemoteEvent, bucketKey: stri
 	return setmetatable({
 		_remote = remote,
 		_bucketKey = bucketKey,
-		_rateLimit = rateLimit or Comm.DefaultRateLimit,
+		_rateLimit = rateLimit or Channel.DefaultRateLimit,
 	}, Signal)
 end
 
@@ -571,13 +571,23 @@ function Property.new(remoteEvent: RemoteEvent, remoteFunction: RemoteFunction, 
 		_remoteEvent = remoteEvent,
 		_remoteFunction = remoteFunction,
 		_value = initialValue,
+		_overrides = {} :: { [Player]: any }, -- server-only: per-player value overrides
 		_observers = {} :: { (any) -> () },
+		_playerRemovingConnection = nil :: RBXScriptConnection?,
 	}, Property)
 
 	if IsServer then
-		self._remoteFunction.OnServerInvoke = function()
+		self._remoteFunction.OnServerInvoke = function(player)
+			local override = self._overrides[player]
+			if override ~= nil then
+				return override
+			end
 			return self._value
 		end
+
+		self._playerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
+			self._overrides[player] = nil
+		end)
 	else
 		local ok, value = pcall(function()
 			return self._remoteFunction:InvokeServer()
@@ -598,14 +608,55 @@ function Property.new(remoteEvent: RemoteEvent, remoteFunction: RemoteFunction, 
 	return self
 end
 
+-- Client: the last value received. Server: the default value (per-player
+-- overrides are only visible to that player - use :GetFor(player) instead).
 function Property:Get(): any
 	return self._value
 end
 
+-- Sets the default value and broadcasts it to every client that doesn't
+-- currently have a per-player override (see :SetFor).
 function Property:Set(value: any)
 	assert(IsServer, "Property:Set is server-only")
 	self._value = value
-	self._remoteEvent:FireAllClients(value)
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if self._overrides[player] == nil then
+			self._remoteEvent:FireClient(player, value)
+		end
+	end
+end
+
+-- Sets a value visible only to `player`, overriding the shared default
+-- until :ClearFor(player) is called or the player leaves.
+function Property:SetFor(player: Player, value: any)
+	assert(IsServer, "Property:SetFor is server-only")
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "Property:SetFor expects a Player")
+
+	self._overrides[player] = value
+	self._remoteEvent:FireClient(player, value)
+end
+
+function Property:GetFor(player: Player): any
+	assert(IsServer, "Property:GetFor is server-only")
+
+	local override = self._overrides[player]
+	if override ~= nil then
+		return override
+	end
+	return self._value
+end
+
+-- Removes `player`'s override, reverting them back to the shared default.
+function Property:ClearFor(player: Player)
+	assert(IsServer, "Property:ClearFor is server-only")
+
+	if self._overrides[player] == nil then
+		return
+	end
+
+	self._overrides[player] = nil
+	self._remoteEvent:FireClient(player, self._value)
 end
 
 -- Client-only: calls `fn` once immediately with the current value, then
@@ -627,6 +678,13 @@ function Property:Observe(fn: (any) -> ())
 	}
 end
 
+function Property:Destroy()
+	if self._playerRemovingConnection then
+		self._playerRemovingConnection:Disconnect()
+		self._playerRemovingConnection = nil
+	end
+end
+
 --------------------------------------------------
 -- Service-scoped API: WrapService (server) / BuildClient (client)
 --------------------------------------------------
@@ -634,17 +692,17 @@ end
 -- Binds a service's `Client` table to real Remote instances. Functions
 -- become RemoteFunctions, signal/property markers become Signal/Property
 -- objects (mutating the table in place, same as the markers they replace).
-function Comm.WrapService(serviceName: string, clientTable: { [any]: any }, opts: WrapOptions?)
-	assert(IsServer, "Comm.WrapService is server-only")
-	assert(type(serviceName) == "string", "Comm.WrapService: serviceName must be a string")
-	assert(type(clientTable) == "table", "Comm.WrapService: clientTable must be a table")
+function Channel.WrapService(serviceName: string, clientTable: { [any]: any }, opts: WrapOptions?)
+	assert(IsServer, "Channel.WrapService is server-only")
+	assert(type(serviceName) == "string", "Channel.WrapService: serviceName must be a string")
+	assert(type(clientTable) == "table", "Channel.WrapService: clientTable must be a table")
 
 	opts = opts or {}
 	local middleware = opts.Middleware or {}
 	local inbound = middleware.Inbound
 	local outbound = middleware.Outbound
-	local rateLimit = opts.RateLimit or Comm.DefaultRateLimit
-	local invokeRateLimit = opts.InvokeRateLimit or Comm.DefaultInvokeRateLimit
+	local rateLimit = opts.RateLimit or Channel.DefaultRateLimit
+	local invokeRateLimit = opts.InvokeRateLimit or Channel.DefaultInvokeRateLimit
 
 	-- Marks the service as "wired" regardless of which Remote classes it
 	-- ends up using. BuildClient waits on this single, always-created
@@ -666,7 +724,7 @@ function Comm.WrapService(serviceName: string, clientTable: { [any]: any }, opts
 
 		if type(value) == "function" then
 			local remote = Get("RemoteFunction", key, serviceName) :: RemoteFunction
-			remote:SetAttribute("WireKind", "Method")
+			remote:SetAttribute("ThreadKind", "Method")
 
 			local bucketKey = serviceName .. "." .. key
 
@@ -697,15 +755,15 @@ function Comm.WrapService(serviceName: string, clientTable: { [any]: any }, opts
 		elseif value == SIGNAL_MARKER or value == UNRELIABLE_SIGNAL_MARKER then
 			local class = (value == UNRELIABLE_SIGNAL_MARKER) and "UnreliableRemoteEvent" or "RemoteEvent"
 			local remote = Get(class, key, serviceName) :: RemoteEvent
-			remote:SetAttribute("WireKind", "Signal")
+			remote:SetAttribute("ThreadKind", "Signal")
 
 			local bucketKey = serviceName .. "." .. key
 			clientTable[key] = Signal.new(remote, bucketKey, rateLimit)
 		elseif type(value) == "table" and value[1] == PROPERTY_MARKER then
 			local remoteEvent = Get("RemoteEvent", key, serviceName) :: RemoteEvent
 			local remoteFunction = Get("RemoteFunction", key, serviceName) :: RemoteFunction
-			remoteEvent:SetAttribute("WireKind", "Property")
-			remoteFunction:SetAttribute("WireKind", "Property")
+			remoteEvent:SetAttribute("ThreadKind", "Property")
+			remoteFunction:SetAttribute("ThreadKind", "Property")
 
 			clientTable[key] = Property.new(remoteEvent, remoteFunction, value[2])
 		end
@@ -716,11 +774,11 @@ end
 -- instances the server created via WrapService. Call proxy:Method(...) for
 -- methods, proxy.SomeSignal:Connect(fn) for signals, proxy.SomeProp:Get()
 -- for properties.
-function Comm.BuildClient(serviceName: string, timeout: number?): { [string]: any }
-	assert(not IsServer, "Comm.BuildClient is client-only")
-	assert(type(serviceName) == "string", "Comm.BuildClient: serviceName must be a string")
+function Channel.BuildClient(serviceName: string, timeout: number?): { [string]: any }
+	assert(not IsServer, "Channel.BuildClient is client-only")
+	assert(type(serviceName) == "string", "Channel.BuildClient: serviceName must be a string")
 
-	local waitTimeout = timeout or Comm.WaitTimeout
+	local waitTimeout = timeout or Channel.WaitTimeout
 
 	-- Wait once on a single, always-created marker instead of blindly
 	-- WaitForChild-ing every Remote class folder - a service that only
@@ -729,7 +787,7 @@ function Comm.BuildClient(serviceName: string, timeout: number?): { [string]: an
 	local servicesFolder = Root:FindFirstChild("Services") or Root:WaitForChild("Services", waitTimeout)
 	if not servicesFolder then
 		error(
-			("[Comm] No services have been wired yet (waited %ds). Make sure the server ran Wire.Start() before any client Comm.BuildClient calls."):format(
+			("[Channel] No services have been wired yet (waited %ds). Make sure the server ran Thread.Start() before any client Channel.BuildClient calls."):format(
 				waitTimeout
 			),
 			0
@@ -739,7 +797,7 @@ function Comm.BuildClient(serviceName: string, timeout: number?): { [string]: an
 	local serviceFolder = servicesFolder:FindFirstChild(serviceName) or servicesFolder:WaitForChild(serviceName, waitTimeout)
 	if not serviceFolder then
 		error(
-			("[Comm] Service '%s' was never wired by the server (waited %ds). Check the service name and that Wire.Start() ran on the server."):format(
+			("[Channel] Service '%s' was never wired by the server (waited %ds). Check the service name and that Thread.Start() ran on the server."):format(
 				serviceName,
 				waitTimeout
 			),
@@ -765,7 +823,7 @@ function Comm.BuildClient(serviceName: string, timeout: number?): { [string]: an
 		end
 
 		for _, obj in ipairs(nsFolder:GetChildren()) do
-			local kind = obj:GetAttribute("WireKind")
+			local kind = obj:GetAttribute("ThreadKind")
 			local key = obj.Name
 			local cacheKey = class .. "\1" .. serviceName .. "\1" .. key
 			Cache[cacheKey] = obj
@@ -803,8 +861,8 @@ end
 -- Tears down every Remote created for a service (via WrapService) and
 -- clears related caches. Intended for hot-reload / dynamic teardown in
 -- Studio or tests - not something a typical live server needs to call.
-function Comm.Destroy(serviceName: string)
-	assert(type(serviceName) == "string", "Comm.Destroy expects a string")
+function Channel.Destroy(serviceName: string)
+	assert(type(serviceName) == "string", "Channel.Destroy expects a string")
 
 	for _, class in ipairs({ "RemoteFunction", "RemoteEvent", "UnreliableRemoteEvent" }) do
 		local classFolder = Root:FindFirstChild(class)
@@ -835,4 +893,4 @@ function Comm.Destroy(serviceName: string)
 	Log("Destroyed service remotes:", serviceName)
 end
 
-return Comm
+return Channel

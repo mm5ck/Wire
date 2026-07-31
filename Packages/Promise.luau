@@ -145,6 +145,117 @@ function Promise.allSettled(promises: { Promise }): Promise
 	end)
 end
 
+-- Settles with whichever promise settles first (resolve OR reject).
+function Promise.race(promises: { Promise }): Promise
+	return Promise.new(function(resolve, reject)
+		if #promises == 0 then
+			reject("Promise.race: no promises given")
+			return
+		end
+		for _, promise in ipairs(promises) do
+			promise:andThen(resolve, reject)
+		end
+	end)
+end
+
+-- Resolves once `count` of the given promises have resolved, with an array
+-- of their values (in completion order). Rejects as soon as reaching
+-- `count` resolutions becomes impossible (too many have already rejected).
+function Promise.some(promises: { Promise }, count: number): Promise
+	return Promise.new(function(resolve, reject)
+		assert(count > 0, "Promise.some: count must be > 0")
+
+		local total = #promises
+		if count > total then
+			reject(("Promise.some: requested %d results from only %d promises"):format(count, total))
+			return
+		end
+
+		local results = {}
+		local resolvedCount = 0
+		local rejectedCount = 0
+		local settled = false
+
+		for _, promise in ipairs(promises) do
+			promise:andThen(function(value)
+				if settled then
+					return
+				end
+				resolvedCount += 1
+				table.insert(results, value)
+				if resolvedCount >= count then
+					settled = true
+					resolve(results)
+				end
+			end, function(err)
+				if settled then
+					return
+				end
+				rejectedCount += 1
+				if total - rejectedCount < count then
+					settled = true
+					reject(("Promise.some: too many rejections, last error: %s"):format(tostring(err)))
+				end
+			end)
+		end
+	end)
+end
+
+-- Resolves with no value after `seconds`. Handy for chains, e.g.
+-- `Promise.delay(1):andThen(function() ... end)`.
+function Promise.delay(seconds: number): Promise
+	return Promise.new(function(resolve)
+		task.delay(seconds, resolve)
+	end)
+end
+
+-- Calls `fn()` (which must return a Promise) up to `attempts` times,
+-- resolving on the first success and rejecting with the last error if
+-- every attempt fails.
+function Promise.retry(fn: () -> Promise, attempts: number): Promise
+	assert(type(fn) == "function", "Promise.retry: fn must be a function")
+	assert(attempts > 0, "Promise.retry: attempts must be > 0")
+
+	return Promise.new(function(resolve, reject)
+		local function attempt(n: number)
+			fn():andThen(resolve, function(err)
+				if n >= attempts then
+					reject(err)
+				else
+					attempt(n + 1)
+				end
+			end)
+		end
+		attempt(1)
+	end)
+end
+
+-- Wraps an RBXScriptSignal (or anything duck-typed like one, e.g. Thread's
+-- own Signal module) into a Promise that resolves the next time it fires.
+-- If the event fires with more than one argument, they're packed into an
+-- array; with 0 or 1 argument, resolves with that value directly.
+export type EventLike = { Connect: (self: any, fn: (...any) -> ()) -> { Disconnect: (self: any) -> () } }
+
+function Promise.fromEvent(event: RBXScriptSignal | EventLike, predicate: ((...any) -> boolean)?): Promise
+	return Promise.new(function(resolve)
+		local connection
+		connection = event:Connect(function(...)
+			if predicate and not predicate(...) then
+				return
+			end
+			if connection then
+				connection:Disconnect()
+			end
+			local n = select("#", ...)
+			if n <= 1 then
+				resolve(...)
+			else
+				resolve({ ... })
+			end
+		end)
+	end)
+end
+
 function Promise:andThen(onResolve: ((any) -> any)?, onReject: ((any) -> any)?): Promise
 	return Promise.new(function(resolve, reject)
 		local function handleResolve(value: any)
@@ -196,6 +307,17 @@ function Promise:finally(callback: () -> ()): Promise
 		callback()
 		error(err, 0)
 	end)
+end
+
+-- Rejects if this promise hasn't settled within `seconds`. Does not cancel
+-- whatever work the original promise represents - it just stops waiting.
+function Promise:timeout(seconds: number, timeoutError: any?): Promise
+	return Promise.race({
+		self,
+		Promise.delay(seconds):andThen(function()
+			error(timeoutError or ("Promise timed out after %ds"):format(seconds), 0)
+		end),
+	})
 end
 
 function Promise:await(): any
